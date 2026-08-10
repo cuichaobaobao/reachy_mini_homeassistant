@@ -83,6 +83,8 @@ async def async_setup_entry(
             entities.append(
                 ReachyMiniRecordedMoveSelect(coordinator, entry, description)
             )
+    if coordinator.available_apps:
+        entities.append(ReachyMiniAppSelect(coordinator, entry))
     async_add_entities(entities)
 
 
@@ -171,3 +173,51 @@ class ReachyMiniRecordedMoveSelect(ReachyMiniEntity, SelectEntity, RestoreEntity
             self.coordinator.selected_move[
                 self.entity_description.dataset
             ] = last_state.state
+
+
+APP_DESCRIPTION = SelectEntityDescription(
+    key="app",
+    translation_key="app",
+    name="App",
+    icon="mdi:application-cog-outline",
+)
+
+
+class ReachyMiniAppSelect(ReachyMiniEntity, SelectEntity, RestoreEntity):
+    """Pick-only select of installed/available apps.
+
+    Selecting an option mutates ``coordinator.selected_app`` and
+    nothing else — the ``Start app`` button reads that state and POSTs
+    to the start-app endpoint when pressed. Mirrors
+    :class:`ReachyMiniRecordedMoveSelect`.
+    """
+
+    entity_description = APP_DESCRIPTION
+
+    def __init__(
+        self,
+        coordinator: ReachyMiniCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        """Bind to the app catalog captured at setup time."""
+        super().__init__(coordinator, entry, APP_DESCRIPTION.key)
+        self._attr_options = list(coordinator.available_apps)
+
+    @property
+    def current_option(self) -> str | None:
+        """Read the user's last pick from the coordinator's in-memory state."""
+        return self.coordinator.selected_app
+
+    async def async_select_option(self, option: str) -> None:
+        """Stash the pick on the coordinator; no HTTP call."""
+        if option not in self._attr_options:
+            return
+        self.coordinator.selected_app = option
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last pick if it's still a valid option."""
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state is not None and last_state.state in self._attr_options:
+            self.coordinator.selected_app = last_state.state

@@ -27,6 +27,7 @@ from .const import (
     DOMAIN,
     EMOTIONS_DATASET,
     ENDPOINT_APP_RESTART_CURRENT,
+    ENDPOINT_APP_START,
     ENDPOINT_APP_STOP_CURRENT,
     ENDPOINT_DAEMON_RESTART,
     ENDPOINT_DAEMON_START_WAKE,
@@ -133,6 +134,10 @@ async def async_setup_entry(
             entities.append(
                 ReachyMiniPlayMoveButton(coordinator, entry, description)
             )
+    # Mirror the select gate: only create the start-app button if the
+    # app catalog was populated at setup time.
+    if coordinator.available_apps:
+        entities.append(ReachyMiniStartAppButton(coordinator, entry))
     async_add_entities(entities)
 
 
@@ -243,3 +248,33 @@ class ReachyMiniPlayMoveButton(ReachyMiniEntity, ButtonEntity):
                 f"No {self.entity_description.name.lower()} selected"
             )
         await self.coordinator.async_play_recorded_move(dataset, move)
+
+
+START_APP_DESCRIPTION = ButtonEntityDescription(
+    key="start_app",
+    translation_key="start_app",
+    icon="mdi:rocket-launch-outline",
+)
+
+
+class ReachyMiniStartAppButton(ReachyMiniEntity, ButtonEntity):
+    """Starts the app currently selected in the App select on press."""
+
+    entity_description = START_APP_DESCRIPTION
+
+    def __init__(
+        self,
+        coordinator: ReachyMiniCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        """Wire the button to the coordinator."""
+        super().__init__(coordinator, entry, START_APP_DESCRIPTION.key)
+
+    async def async_press(self) -> None:
+        """Read the App select's pick and POST to the start-app endpoint."""
+        app_name = self.coordinator.selected_app
+        if not app_name:
+            raise HomeAssistantError("No app selected")
+        await self.coordinator.async_post(
+            ENDPOINT_APP_START.format(app_name=app_name)
+        )

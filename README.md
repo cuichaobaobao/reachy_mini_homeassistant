@@ -14,11 +14,11 @@ instance, polls the robot's daemon every 30 s, and exposes:
   robot's WebRTC stream server-side (works alongside apps and
   mobile/desktop remote sessions; no SDK changes),
 - writable **selects** for motor mode (enabled / disabled /
-  gravity compensation), emotion, and dance,
+  gravity compensation), emotion, dance, and app,
 - writable **number sliders** for speaker and microphone volume,
 - one-shot action **buttons** for wake up, go to sleep, stop/restart
   the running app, play a test sound, restart the daemon, play
-  emotion, and play dance.
+  emotion, play dance, and start the selected app.
 
 Auto-discovery uses the `_reachy-mini._tcp.local.` mDNS advertisement
 the daemon ships out of the box. Polling fans out to several of the
@@ -104,6 +104,7 @@ its stable `unit_id` (a hash of the audio device serial). Underneath:
 | Motor mode | `enabled` / `disabled` / `gravity_compensation` | Picking an option POSTs to `/api/motors/set_mode/{mode}`. Use `disabled` as a soft E-stop (motors release torque). |
 | Emotion | One entry per move in the emotions library | Stores the chosen emotion name; does not play it. Use the *Play emotion* button (or the `reachy_mini.play_recorded_move` service) to trigger playback. |
 | Dance | One entry per move in the dances library | Stores the chosen dance name; does not play it. Use the *Play dance* button (or the `reachy_mini.play_recorded_move` service) to trigger playback. |
+| App | One entry per installed/available app (`GET /api/apps/list-available`) | Stores the chosen app name; does not start it. Use the *Start app* button to launch it. Only created when the daemon returns at least one app. |
 
 ### Numbers (controllable sliders)
 
@@ -128,6 +129,7 @@ the value actually applied.
 | Restart daemon | `POST /api/daemon/restart` | Soft restart of the daemon process. Use sparingly. |
 | Play emotion | `POST /api/move/play/recorded-move-dataset/{dataset}/{move}` | Plays the emotion currently selected in the *Emotion* select entity. |
 | Play dance | `POST /api/move/play/recorded-move-dataset/{dataset}/{move}` | Plays the dance currently selected in the *Dance* select entity. |
+| Start app | `POST /api/apps/start-app/{app_name}` | Starts the app currently selected in the *App* select entity. Only created when the daemon returns at least one app. |
 
 ### Recorded moves (emotions and dances)
 
