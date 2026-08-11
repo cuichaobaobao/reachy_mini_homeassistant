@@ -104,7 +104,7 @@ its stable `unit_id` (a hash of the audio device serial). Underneath:
 | Motor mode | `enabled` / `disabled` / `gravity_compensation` | Picking an option POSTs to `/api/motors/set_mode/{mode}`. Use `disabled` as a soft E-stop (motors release torque). |
 | Emotion | One entry per move in the emotions library | Stores the chosen emotion name; does not play it. Use the *Play emotion* button (or the `reachy_mini.play_recorded_move` service) to trigger playback. |
 | Dance | One entry per move in the dances library | Stores the chosen dance name; does not play it. Use the *Play dance* button (or the `reachy_mini.play_recorded_move` service) to trigger playback. |
-| App | One entry per installed/available app (`GET /api/apps/list-available`) | Stores the chosen app name; does not start it. Use the *Start app* button to launch it. Only created when the daemon returns at least one app. |
+| App | One entry per installed app (`GET /api/apps/list-available/installed`) | Stores the chosen app name; does not start it. Use the *Start app* button to launch it. Only lists apps already installed on the daemon (not the full HF Space / dashboard catalog). Only created when the daemon returns at least one installed app. |
 
 ### Numbers (controllable sliders)
 

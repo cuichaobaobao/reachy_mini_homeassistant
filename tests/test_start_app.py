@@ -23,9 +23,9 @@ from .conftest import BASE_URL
 async def test_async_load_available_apps_populates_from_daemon(
     hass, coordinator, aioclient_mock
 ) -> None:
-    """The catalog is built from the `name` field of each AppInfo entry."""
+    """The catalog is built from the `name` field of each installed AppInfo."""
     aioclient_mock.get(
-        f"{BASE_URL}/api/apps/list-available",
+        f"{BASE_URL}/api/apps/list-available/installed",
         json=[
             {"name": "my_app", "source_kind": "local", "description": ""},
             {"name": "other_app", "source_kind": "local", "description": ""},
@@ -42,7 +42,7 @@ async def test_async_load_available_apps_handles_empty_response(
     hass, coordinator, aioclient_mock
 ) -> None:
     """An empty/failing catalog leaves available_apps empty, no crash."""
-    aioclient_mock.get(f"{BASE_URL}/api/apps/list-available", status=404)
+    aioclient_mock.get(f"{BASE_URL}/api/apps/list-available/installed", status=404)
 
     await coordinator.async_load_available_apps()
 
