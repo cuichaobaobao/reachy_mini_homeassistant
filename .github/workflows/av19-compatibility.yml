@@ -1,0 +1,38 @@
+name: AV19 compatibility
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/**'
+      - 'custom_components/**'
+      - 'wheels/**'
+      - '.github/workflows/av19-compatibility.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  media:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.13', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Build candidate from hash-verified source
+        run: python scripts/build_av19_wheel.py
+      - name: Install candidate with AV19 (normal dependency resolution)
+        run: python -m pip install "av==19.0.0" dist/aiortc-1.14.0+av19.1-py3-none-any.whl aiohttp
+      - name: Verify dependency consistency
+        run: python -m pip check
+      - name: Exercise real media pipeline
+        run: python scripts/check_av19_media.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: av19-candidate-python-${{ matrix.python }}
+          path: dist/
+          retention-days: 7
