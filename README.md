@@ -1,3 +1,13 @@
+# Reachy Mini — cuichaobaobao maintained fork
+
+Release **0.2.1** adapts the camera dependency to AV19 without downgrading Home Assistant's PyAV package. Based on [Pollen Robotics' original integration](https://github.com/pollen-robotics/reachy_mini_homeassistant).
+
+Cloud checks passed on Python 3.13/3.14 and Home Assistant 2026.10.1: dependency resolution, module imports, H264/VP8 WebRTC video, audio, and JPEG encoding. Physical robot discovery and video still need installation testing. See [fork notes](FORK_NOTES.md).
+
+Add this fork as an **Integration** custom repository in HACS. It uses the same reachy_mini domain as upstream; install only one.
+
+---
+
 # Reachy Mini Home Assistant integration
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://hacs.xyz)
@@ -37,7 +47,7 @@ extra protocols, no broker, no auth.
 > [Custom Repository](https://hacs.xyz/docs/faq/custom_repositories/).
 
 1. Open HACS → **Integrations** → ⋮ → **Custom repositories**.
-2. Add `https://github.com/pollen-robotics/reachy_mini_homeassistant`
+2. Add `https://github.com/cuichaobaobao/reachy_mini_homeassistant`
    with category **Integration**, then click **Add**.
 3. Find **Reachy Mini** in the HACS list and click **Download**.
 4. Restart Home Assistant. The first restart takes a little longer:
