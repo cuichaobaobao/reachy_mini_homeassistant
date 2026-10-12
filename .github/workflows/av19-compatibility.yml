@@ -61,3 +61,47 @@ jobs:
           PY
       - name: Repeat media checks with HA-pinned dependencies
         run: python scripts/check_av19_media.py
+
+  publish_initial_release:
+    needs: [media, homeassistant]
+    if: github.repository == 'cuichaobaobao/reachy_mini_homeassistant' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check whether initial release is still pending
+        id: pending
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          version = json.loads(Path("custom_components/reachy_mini/manifest.json").read_text())["version"]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              print("pending=" + str(version == "0.2.0").lower(), file=out)
+          PY
+      - uses: actions/setup-python@v5
+        if: steps.pending.outputs.pending == 'true'
+        with:
+          python-version: '3.14'
+      - name: Prepare hash-pinned integration release
+        if: steps.pending.outputs.pending == 'true'
+        run: |
+          python scripts/build_av19_wheel.py
+          python scripts/prepare_initial_release.py
+      - name: Commit verified wheel and integration version
+        if: steps.pending.outputs.pending == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add wheels/aiortc-1.14.0+av19.1-py3-none-any.whl wheels/README.md custom_components/reachy_mini/manifest.json hacs.json README.md FORK_NOTES.md
+          git commit -m "fix: release 0.2.1 with verified AV19 compatibility"
+          git push origin HEAD:main
+      - name: Publish integration release
+        if: steps.pending.outputs.pending == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create v0.2.1 --target "$(git rev-parse HEAD)" --title "0.2.1 — AV19 compatibility" --notes-file FORK_NOTES.md
