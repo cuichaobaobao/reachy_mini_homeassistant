@@ -1,0 +1,43 @@
+name: Release JPEG quality fix
+on:
+  push:
+    paths: ['.github/workflows/release-0.2.4.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+jobs:
+  publish:
+    if: github.repository == 'cuichaobaobao/reachy_mini_homeassistant' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: bc291818c93a9783a9870908838f2e83d586d91f
+          fetch-depth: 0
+      - name: Verify tested commit and unchanged dependencies
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/cuichaobaobao/reachy_mini_homeassistant/actions/runs/38910036357 > /tmp/run.json
+          python - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+          run = json.loads(Path("/tmp/run.json").read_text())
+          assert run["head_sha"] == "bc291818c93a9783a9870908838f2e83d586d91f"
+          assert run["conclusion"] == "success"
+          path = "custom_components/reachy_mini/manifest.json"
+          old = json.loads(subprocess.check_output(["git", "show", "v0.2.3:" + path]))
+          new = json.loads(Path(path).read_text())
+          assert new.pop("version") == "0.2.4"
+          old.pop("version")
+          assert old == new
+          changed = subprocess.check_output(["git", "diff", "--name-only", "v0.2.3", "HEAD"]).decode().splitlines()
+          runtime = [p for p in changed if p.startswith(("custom_components/", "wheels/"))]
+          assert set(runtime) == {path, "custom_components/reachy_mini/stream.py"}, runtime
+          PY
+      - name: Publish tested version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create v0.2.4 --target "bc291818c93a9783a9870908838f2e83d586d91f" --title "0.2.4 — preserve camera image quality" --notes-file RELEASE_0.2.4.md
