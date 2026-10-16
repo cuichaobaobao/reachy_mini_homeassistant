@@ -99,6 +99,11 @@ class _JpegEncoder:
             codec.pix_fmt = "yuvj420p"
             codec.time_base = Fraction(1, 90000)
             codec.thread_count = 1
+            # A reusable MJPEG codec must not tighten compression over time
+            # to satisfy the bare context\'s default 200 kbps rate target.
+            codec.bit_rate = 0
+            codec.qscale = True
+            codec.global_quality = 8  # PyAV takes QP units, not FF_QP2LAMBDA.
             codec.open()
             self._codec = codec
             self._size = size

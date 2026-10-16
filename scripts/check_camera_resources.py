@@ -231,7 +231,59 @@ async def streaming(producer=False):
         await asyncio.wait_for(process.wait(), 10)
     print("PASS real WebRTC audio/video, 3 viewers, 120-second view, 20 open/close cycles, receiver measured separately", flush=True)
 
+def quality_regression():
+    import math
+    import random
+    rng = random.Random(42)
+    w, h = 640, 480
+    patterns = {
+        "fine_detail": bytes(rng.randrange(256) for _ in range(w*h)),
+        "checker": bytes(220 if (x//3+y//3)%2 else 30 for y in range(h) for x in range(w)),
+        "gradient": bytes(x*255//(w-1) for y in range(h) for x in range(w)),
+    }
+    def source(raw, i):
+        f = av.VideoFrame(w, h, "gray")
+        p = f.planes[0]
+        padded = b"".join(raw[y*w:(y+1)*w] + bytes(p.line_size-w) for y in range(h))
+        p.update(padded)
+        from fractions import Fraction
+        f.pts = i*3000
+        f.time_base = Fraction(1, 90000)
+        return f
+    def legacy(f):
+        buffer = io.BytesIO()
+        with av.open(buffer, mode="w", format="mjpeg") as c:
+            stream = c.add_stream("mjpeg", rate=1)
+            stream.width, stream.height = w, h
+            stream.pix_fmt = "yuvj420p"
+            for p in stream.encode(f.reformat(format="yuvj420p")):
+                c.mux(p)
+            for p in stream.encode():
+                c.mux(p)
+        return buffer.getvalue()
+    def psnr(data, raw):
+        with av.open(io.BytesIO(data)) as c:
+            f = next(c.decode(video=0)).reformat(format="gray")
+            p = f.planes[0]
+            padded = bytes(p)
+            decoded = b"".join(padded[y*p.line_size:y*p.line_size+w] for y in range(h))
+        mse = sum((a-b)**2 for a,b in zip(decoded,raw))/(w*h)
+        return 100.0 if not mse else 10*math.log10(255**2/mse)
+    for name, raw in patterns.items():
+        old = legacy(source(raw, 0))
+        encoder = media._JpegEncoder()
+        first = encoder.encode(source(raw, 0))
+        for i in range(1, 60):
+            last = encoder.encode(source(raw, i))
+        encoder.close()
+        assert first == last, "quality must not deteriorate on repeated identical input"
+        before, after = psnr(old, raw), psnr(last, raw)
+        assert after >= before - .1, (name, before, after)
+        print("QUALITY", name, "old/new PSNR", before, after, "bytes", len(old), len(last), flush=True)
+    print("PASS fixed JPEG quality across 60 frames and three detail patterns", flush=True)
+
 async def main():
+    quality_regression()
     encoder_stress()
     await concurrency()
     await cancelled_cleanup()
