@@ -1,6 +1,7 @@
 """Cloud-only resource regression checks; no forced garbage collection."""
 import asyncio
 import gc
+import faulthandler
 import io
 import json
 import threading
@@ -193,4 +194,8 @@ async def main():
     await streaming()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    faulthandler.dump_traceback_later(240, exit=True)
+    try:
+        asyncio.run(main())
+    finally:
+        faulthandler.cancel_dump_traceback_later()
