@@ -347,24 +347,35 @@ class ReachyMiniStreamClient:
         finally:
             if not clean_stop:
                 self._cooldown_until = loop.time() + self._cooldown
-            video_task = self._video_task
-            self._video_task = None
-            if video_task is not None:
-                video_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await video_task
-            audio_tasks = tuple(self._audio_tasks)
-            self._audio_tasks.clear()
-            for task in audio_tasks:
-                task.cancel()
-            await asyncio.gather(*audio_tasks, return_exceptions=True)
-            with contextlib.suppress(Exception):
-                await pc.close()
-            await self._clear_media()
-            self._frame = None
-            self._jpeg_cache = None
-            # Wake any waiters so they fail fast instead of timing out.
-            self._frame_event.set()
+            # A stop can arrive while a naturally-ended session is already
+            # cleaning up. Cancelling pc.close() can leave aiortc's close
+            # future unfinished, so finish cleanup before propagating it.
+            cleanup = asyncio.create_task(self._finish_session(pc))
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                await asyncio.shield(cleanup)
+                raise
+
+    async def _finish_session(self, pc: Any) -> None:
+        video_task = self._video_task
+        self._video_task = None
+        if video_task is not None:
+            video_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await video_task
+        audio_tasks = tuple(self._audio_tasks)
+        self._audio_tasks.clear()
+        for task in audio_tasks:
+            task.cancel()
+        await asyncio.gather(*audio_tasks, return_exceptions=True)
+        with contextlib.suppress(Exception):
+            await pc.close()
+        await self._clear_media()
+        self._frame = None
+        self._jpeg_cache = None
+        # Wake any waiters so they fail fast instead of timing out.
+        self._frame_event.set()
 
     async def _signalling_loop(self, ws: Any, pc: Any) -> None:
         pc.on("track", self._on_track)

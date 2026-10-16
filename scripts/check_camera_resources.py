@@ -95,8 +95,28 @@ async def concurrency():
     assert client._jpeg_cache is None and client._jpeg_task is None
     print("PASS 20 simultaneous requests, cancellation and shutdown", flush=True)
 
+async def cancelled_cleanup():
+    started, finish = asyncio.Event(), asyncio.Event()
+    class PC:
+        async def close(self):
+            started.set()
+            await finish.wait()
+    class Session:
+        def ws_connect(self, *args, **kwargs):
+            raise OSError("expected test disconnect")
+    client = media.ReachyMiniStreamClient("unused", session=Session(), pc_factory=PC)
+    await client.acquire()
+    await asyncio.wait_for(started.wait(), 2)
+    shutdown = asyncio.create_task(client.async_shutdown())
+    await asyncio.sleep(.02)
+    assert not shutdown.done()
+    finish.set()
+    await asyncio.wait_for(shutdown, 2)
+    print("PASS stop during natural session cleanup", flush=True)
+
 async def streaming():
     peers = []
+    close_tasks = []
     tracks = []
     async def handler(request):
         ws = web.WebSocketResponse()
@@ -122,9 +142,11 @@ async def streaming():
                 elif msg["type"] == "endSession":
                     break
         finally:
+            close_task = asyncio.create_task(pc.close())
+            close_tasks.append(close_task)
+            await asyncio.shield(close_task)
             video.stop()
             audio.stop()
-            await pc.close()
             await ws.close()
         return ws
 
@@ -175,6 +197,17 @@ async def streaming():
                 assert client._jpeg_task is None
                 assert client._frame is None
                 assert not any(t.name in ("audio-decoder", "video-decoder") for t in threading.enumerate())
+                # Await the test producer too; its native encoders must not
+                # contaminate the next receiver lifecycle measurement.
+                for _ in range(500):
+                    if len(close_tasks) > cycle and close_tasks[cycle].done():
+                        break
+                    await asyncio.sleep(.01)
+                else:
+                    for task in asyncio.all_tasks():
+                        task.print_stack()
+                    raise AssertionError("test producer cleanup stalled")
+                await close_tasks[cycle]
                 print("CLOSED", cycle, usage(), flush=True)
             assert len(receiver_pcs) == 5
             # Ignore startup allocator warmup; allow bounded native allocator caches.
@@ -184,13 +217,14 @@ async def streaming():
     finally:
         for t in tracks:
             t.stop()
-        await asyncio.gather(*(p.close() for p in peers + receiver_pcs))
+        await asyncio.wait_for(asyncio.gather(*(p.close() for p in peers + receiver_pcs)), 10)
         await server.close()
     print("PASS real WebRTC audio/video, 3 viewers, 120-second view, 5 open/close cycles", flush=True)
 
 async def main():
     encoder_stress()
     await concurrency()
+    await cancelled_cleanup()
     await streaming()
 
 if __name__ == "__main__":
