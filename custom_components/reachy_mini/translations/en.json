@@ -41,6 +41,7 @@
     },
     "select": {
       "motor_mode": { "name": "Motor mode" },
+      "app": { "name": "App" },
       "emotion": {
         "name": "Emotion",
         "state": {
@@ -175,7 +176,8 @@
       "play_test_sound": { "name": "Play test sound" },
       "restart_daemon": { "name": "Restart daemon" },
       "play_emotion": { "name": "Play emotion" },
-      "play_dance": { "name": "Play dance" }
+      "play_dance": { "name": "Play dance" },
+      "start_app": { "name": "Start app" }
     },
     "camera": {
       "camera": { "name": "Camera" }

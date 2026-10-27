@@ -56,6 +56,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # include them in the per-tick poll. Failures inside are logged but
     # don't abort setup — the matching entities just won't be created.
     await coordinator.async_load_move_lists()
+    # Same one-shot lifecycle for the installed/available app catalog.
+    await coordinator.async_load_available_apps()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

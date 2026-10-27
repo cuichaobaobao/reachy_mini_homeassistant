@@ -47,6 +47,7 @@ from .const import (
     DEFAULT_TIMEOUT,
     DOMAIN,
     ENDPOINT_APP_LOCK,
+    ENDPOINT_APPS_LIST_INSTALLED,
     ENDPOINT_DOA,
     ENDPOINT_MOVE_LIST,
     ENDPOINT_MOVE_PLAY,
@@ -122,6 +123,13 @@ class ReachyMiniCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.selected_move: dict[str, str | None] = {
             ds: None for ds in RECORDED_MOVE_DATASETS
         }
+        # Installed app names (SourceKind.INSTALLED only — excludes the
+        # not-yet-installed HF Space / dashboard / local catalog).
+        # Populated once at setup-time via async_load_available_apps,
+        # same lifecycle as move_lists.
+        self.available_apps: list[str] = []
+        # User's last pick from the app select; read by the start-app button.
+        self.selected_app: str | None = None
 
     @property
     def host(self) -> str:
@@ -273,3 +281,23 @@ class ReachyMiniCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.async_post(
             ENDPOINT_MOVE_PLAY.format(dataset=dataset, move=move)
         )
+
+    async def async_load_available_apps(self) -> None:
+        """Fetch the installed app catalog (best-effort).
+
+        Called once during ``async_setup_entry``, same lifecycle as
+        ``async_load_move_lists``. Only installed apps (SourceKind.
+        INSTALLED) are listed — not the full HF Space / dashboard /
+        local catalog of apps that aren't installed yet. A failure
+        (older daemon, network blip) just leaves ``available_apps``
+        empty — the app select / start-app button are then simply not
+        created downstream.
+        """
+        result = await self._fetch_json(ENDPOINT_APPS_LIST_INSTALLED)
+        if isinstance(result, list) and result:
+            names = [str(app["name"]) for app in result if "name" in app]
+            self.available_apps = names
+            if names and self.selected_app is None:
+                self.selected_app = names[0]
+        else:
+            _LOGGER.info("Reachy Mini: no available apps returned by daemon")

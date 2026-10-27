@@ -45,6 +45,10 @@ ENDPOINT_DAEMON_STOP_SLEEP = "/api/daemon/stop?goto_sleep=true"
 DAEMON_STATE_RUNNING = "running"
 ENDPOINT_APP_STOP_CURRENT = "/api/apps/stop-current-app"
 ENDPOINT_APP_RESTART_CURRENT = "/api/apps/restart-current-app"
+# SourceKind.INSTALLED filter — only apps already installed on the
+# daemon, not the full HF Space / dashboard / local catalog.
+ENDPOINT_APPS_LIST_INSTALLED = "/api/apps/list-available/installed"
+ENDPOINT_APP_START = "/api/apps/start-app/{app_name}"  # path-templated
 ENDPOINT_VOLUME_TEST_SOUND = "/api/volume/test-sound"
 ENDPOINT_DAEMON_RESTART = "/api/daemon/restart"
 
