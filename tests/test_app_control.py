@@ -270,16 +270,35 @@ async def test_http_empty_status_is_not_idle(coordinator, aioclient_mock):
     assert all(method == "GET" for method, *_ in aioclient_mock.mock_calls)
 
 
-async def test_sleep_http_sequence(coordinator, aioclient_mock):
-    """Exercise real HTTP serialization including the stop endpoint's JSON null."""
-    aioclient_mock.get(BASE_URL + APP_STATUS, json=status())
-    aioclient_mock.get(BASE_URL + APP_STATUS, text="null")
+async def test_sleep_http_stop_response(coordinator, aioclient_mock):
+    """The real stop endpoint responds with JSON null, then the backend job runs."""
     aioclient_mock.get(BASE_URL + APP_SLOT, json={"state": "free"})
-    aioclient_mock.get(BASE_URL + DAEMON_STATUS, json={"state": "running"})
-    aioclient_mock.get(BASE_URL + DAEMON_STATUS, json={"state": "stopped"})
     aioclient_mock.post(BASE_URL + STOP_APP, text="null")
     aioclient_mock.post(BASE_URL + SLEEP_BACKEND, json={"job_id": "job"})
     aioclient_mock.get(BASE_URL + "/api/apps/job-status/job", json={"status": "done"})
-    await coordinator.app_control.sleep()
+    client = coordinator.app_control
+    with (
+        patch.object(client, "_current", AsyncMock(side_effect=[(APP, "running"), (None, "done")])),
+        patch.object(client, "_backend_state", AsyncMock(side_effect=["running", "stopped"])),
+    ):
+        await client.sleep()
     posts = [str(url) for method, url, *_ in aioclient_mock.mock_calls if method == "POST"]
     assert posts == [BASE_URL + STOP_APP, BASE_URL + SLEEP_BACKEND]
+
+
+async def test_backend_timeout_does_not_start_app():
+    robot = Robot(backend="stopped")
+    robot.job_status = "pending"
+    with (
+        patch("custom_components.reachy_mini.app_control.TRANSITION_TIMEOUT", 0.01),
+        pytest.raises(HomeAssistantError, match="Timed out"),
+    ):
+        await control(robot).start(APP)
+    assert robot.posts == [START_BACKEND]
+
+
+async def test_error_status_with_occupied_slot_does_not_stop_backend():
+    robot = Robot(current=status("error"), slot="local_app")
+    with pytest.raises(HomeAssistantError):
+        await control(robot).sleep()
+    assert robot.posts == []

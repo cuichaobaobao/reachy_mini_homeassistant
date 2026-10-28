@@ -1,6 +1,6 @@
 # Reachy Mini — cuichaobaobao maintained fork
 
-Latest release: **0.2.2** adds a bundled Reachy Mini icon and logo for Home Assistant 2026.3+, with no new dependencies. Update in HACS, restart HA and refresh the browser.
+Latest release: **0.2.5** adds app selection/start and stops the current app before backend shutdown. Names stay English; dependencies and camera code are unchanged. Update in HACS and restart HA. See [release notes](RELEASE_0.2.5.md).
 
 Release **0.2.1** adapts the camera dependency to AV19 without downgrading Home Assistant's PyAV package. Based on [Pollen Robotics' original integration](https://github.com/pollen-robotics/reachy_mini_homeassistant).
 
@@ -26,9 +26,9 @@ instance, polls the robot's daemon every 30 s, and exposes:
   robot's WebRTC stream server-side (works alongside apps and
   mobile/desktop remote sessions; no SDK changes),
 - writable **selects** for motor mode (enabled / disabled /
-  gravity compensation), emotion, and dance,
+  gravity compensation), app selection, emotion, and dance,
 - writable **number sliders** for speaker and microphone volume,
-- one-shot action **buttons** for wake up, go to sleep, stop/restart
+- one-shot action **buttons** for wake up, sleep and stop backend, start selected app, stop/restart
   the running app, play a test sound, restart the daemon, play
   emotion, and play dance.
 
@@ -67,6 +67,11 @@ extra protocols, no broker, no auth.
 2. Restart Home Assistant.
 
 ## Use
+
+For everyday voice use, choose **App**, then press **Start selected app** or **Stop current app**. With only one installed app, it is selected on initial setup. Installed choices refresh every 30 seconds. The official conversation app and reachy_mini_ha_voice wake a sleeping robot during startup; other apps control their own posture.
+
+**Wake up** is a robot command, not a replacement for app Start. **Sleep and stop backend** is a stronger operation: it stops the app before shutting down the backend. If app shutdown fails or cannot be confirmed, backend shutdown is not requested. A remote control session must be ended first. Do not send conflicting lifecycle commands from other clients during shutdown; the daemon does not provide an atomic stop-app-and-backend operation.
+
 
 1. Make sure your Reachy Mini daemon is running on the **same LAN**.
    For *auto-discovery* you need a daemon that advertises
@@ -113,6 +118,7 @@ its stable `unit_id` (a hash of the audio device serial). Underneath:
 
 | Entity | Options | Notes |
 |---|---|---|
+| App | Installed app names | Remembered in HA. Does not modify the robot's Startup app setting. |
 | Motor mode | `enabled` / `disabled` / `gravity_compensation` | Picking an option POSTs to `/api/motors/set_mode/{mode}`. Use `disabled` as a soft E-stop (motors release torque). |
 | Emotion | One entry per move in the emotions library | Stores the chosen emotion name; does not play it. Use the *Play emotion* button (or the `reachy_mini.play_recorded_move` service) to trigger playback. |
 | Dance | One entry per move in the dances library | Stores the chosen dance name; does not play it. Use the *Play dance* button (or the `reachy_mini.play_recorded_move` service) to trigger playback. |
@@ -132,9 +138,10 @@ the value actually applied.
 
 | Entity | Action | Notes |
 |---|---|---|
-| Wake up | `POST /api/move/play/wake_up` | Goes through the wake-up move; the "Awake" binary sensor follows. |
-| Go to sleep | `POST /api/move/play/goto_sleep` | Plays the sleep move and releases torque. |
-| Stop current app | `POST /api/apps/stop-current-app` | Kills the currently running managed app (no-op when free). |
+| Wake up | Backend start with wake, or motor enable + wake move | Wakes the robot; does not explicitly start an app. |
+| Sleep and stop backend | Stop app, confirm exit, then `POST /api/daemon/stop?goto_sleep=true` | Stops speech app first, then sleeps and stops the backend. Antenna wake is unavailable until the backend runs again. Existing sleep entity ID is preserved. |
+| Start selected app | `POST /api/apps/start-app/{name}/no-evict` | Starts the selected installed app, starting a stopped backend first. Does not displace another app/session. Requires the no-evict route available in daemon 1.12.0. |
+| Stop current app | `POST /api/apps/stop-current-app` | Requests app shutdown. Daemon 1.12.0 then handles idle sleep, keeping its backend and configured antenna startup available. Errors if no app is running. |
 | Restart current app | `POST /api/apps/restart-current-app` | Stop + start the current app — handy if it got stuck. |
 | Play test sound | `POST /api/volume/test-sound` | Plays `impatient1.wav` — quick speaker check. |
 | Restart daemon | `POST /api/daemon/restart` | Soft restart of the daemon process. Use sparingly. |
