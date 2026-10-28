@@ -30,12 +30,9 @@ ENDPOINT_VOLUME_MIC_SET = "/api/volume/microphone/set"
 ENDPOINT_MOTOR_SET_MODE = "/api/motors/set_mode/{mode}"  # path-templated
 ENDPOINT_MOVE_WAKE_UP = "/api/move/play/wake_up"
 
-# Daemon lifecycle endpoints — the canonical wake/sleep on the
-# Wireless unit, where "asleep" means the backend is fully stopped
-# and every /api/motors/* and /api/move/* route returns 503. Mirrors
-# the official dashboard (dashboard/static/js/daemon.js). The start
-# path also enables motor torque before the wake move, which the bare
-# ENDPOINT_MOVE_WAKE_UP does not.
+# Backend lifecycle endpoints. A sleeping robot can also have a running
+# backend (for antenna wake-up). These operations explicitly start/stop
+# the backend; stopping an app alone is a separate operation.
 ENDPOINT_DAEMON_START_WAKE = "/api/daemon/start?wake_up=true"
 ENDPOINT_DAEMON_STOP_SLEEP = "/api/daemon/stop?goto_sleep=true"
 

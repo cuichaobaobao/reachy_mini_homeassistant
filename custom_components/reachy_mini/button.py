@@ -1,6 +1,6 @@
 """One-shot action buttons for Reachy Mini.
 
-Each button POSTs to a single SDK endpoint when pressed and otherwise
+Buttons issue robot commands when pressed and otherwise
 has no state. Pairs with the read-only sensors / binary sensors that
 expose the *result* of those actions (e.g. the "Awake" binary sensor
 flips after the "Wake up" button is pressed).
@@ -30,7 +30,6 @@ from .const import (
     ENDPOINT_APP_STOP_CURRENT,
     ENDPOINT_DAEMON_RESTART,
     ENDPOINT_DAEMON_START_WAKE,
-    ENDPOINT_DAEMON_STOP_SLEEP,
     ENDPOINT_MOTOR_SET_MODE,
     ENDPOINT_MOVE_WAKE_UP,
     ENDPOINT_VOLUME_TEST_SOUND,
@@ -55,6 +54,7 @@ WAKE_UP_DESCRIPTION = ButtonEntityDescription(
 GOTO_SLEEP_DESCRIPTION = ButtonEntityDescription(
     key="goto_sleep",
     translation_key="goto_sleep",
+    name="Sleep and stop backend",
     icon="mdi:sleep",
 )
 
@@ -123,6 +123,7 @@ async def async_setup_entry(
     entities: list[ButtonEntity] = [
         ReachyMiniWakeUpButton(coordinator, entry),
         ReachyMiniGotoSleepButton(coordinator, entry),
+        ReachyMiniStartAppButton(coordinator, entry),
         *(ReachyMiniButton(coordinator, entry, desc) for desc in BUTTONS),
     ]
     for description in PLAY_MOVE_BUTTONS:
@@ -153,14 +154,19 @@ class ReachyMiniButton(ReachyMiniEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         """POST to the button's endpoint; coordinator refreshes on success."""
-        await self.coordinator.async_post(self.entity_description.post_path)
+        path = self.entity_description.post_path
+        if path in {ENDPOINT_APP_STOP_CURRENT, ENDPOINT_APP_RESTART_CURRENT, ENDPOINT_DAEMON_RESTART}:
+            async with self.coordinator.app_command_lock:
+                await self.coordinator.async_post(path, timeout=35)
+        else:
+            await self.coordinator.async_post(path)
 
 
 class ReachyMiniWakeUpButton(ReachyMiniEntity, ButtonEntity):
     """Wake the robot regardless of which sleep state it is in.
 
-    On the Wireless unit "asleep" usually means the daemon backend is
-    fully stopped, so the wake move endpoint would 503 — waking from
+    A sleeping robot may have a running or stopped backend. With a
+    stopped backend the wake move endpoint would 503 — waking from
     that state goes through the daemon start endpoint (which enables
     motor torque before playing the wake move, like the dashboard).
     When the backend is already running the daemon start endpoint is a
@@ -181,23 +187,19 @@ class ReachyMiniWakeUpButton(ReachyMiniEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         """Start the daemon if stopped, else enable motors and play wake."""
-        data = self.coordinator.data or {}
-        if data.get("daemon_state") == DAEMON_STATE_RUNNING:
-            await self.coordinator.async_post(
-                ENDPOINT_MOTOR_SET_MODE.format(mode="enabled")
-            )
-            await self.coordinator.async_post(ENDPOINT_MOVE_WAKE_UP)
-        else:
-            await self.coordinator.async_post(ENDPOINT_DAEMON_START_WAKE)
+        async with self.coordinator.app_command_lock:
+            data = self.coordinator.data or {}
+            if data.get("daemon_state") == DAEMON_STATE_RUNNING:
+                await self.coordinator.async_post(
+                    ENDPOINT_MOTOR_SET_MODE.format(mode="enabled")
+                )
+                await self.coordinator.async_post(ENDPOINT_MOVE_WAKE_UP)
+            else:
+                await self.coordinator.async_post(ENDPOINT_DAEMON_START_WAKE)
 
 
 class ReachyMiniGotoSleepButton(ReachyMiniEntity, ButtonEntity):
-    """Put the robot to sleep the way the dashboard does.
-
-    The daemon stop endpoint plays the sleep move, disables motor
-    torque and stops the backend — the bare goto_sleep move endpoint
-    does only the move, leaving torque on and the robot "awake".
-    """
+    """Stop the current app, then sleep and stop the backend."""
 
     entity_description = GOTO_SLEEP_DESCRIPTION
 
@@ -210,13 +212,32 @@ class ReachyMiniGotoSleepButton(ReachyMiniEntity, ButtonEntity):
         super().__init__(coordinator, entry, GOTO_SLEEP_DESCRIPTION.key)
 
     async def async_press(self) -> None:
-        """Stop the daemon with goto_sleep; explain if already asleep."""
-        data = self.coordinator.data or {}
-        if data.get("daemon_state") != DAEMON_STATE_RUNNING:
-            raise HomeAssistantError(
-                "Reachy Mini is already asleep (daemon backend stopped)"
-            )
-        await self.coordinator.async_post(ENDPOINT_DAEMON_STOP_SLEEP)
+        """Do not shut down the backend unless app exit is confirmed."""
+        async with self.coordinator.app_command_lock:
+            try:
+                await self.coordinator.app_control.sleep()
+            finally:
+                await self.coordinator.async_request_refresh()
+
+
+class ReachyMiniStartAppButton(ReachyMiniEntity, ButtonEntity):
+    """Start the app selected in HA without switching another active app."""
+
+    entity_description = ButtonEntityDescription(
+        key="start_selected_app", translation_key="start_selected_app",
+        name="Start selected app", icon="mdi:play-circle-outline",
+    )
+
+    def __init__(self, coordinator: ReachyMiniCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry, "start_selected_app")
+
+    async def async_press(self) -> None:
+        async with self.coordinator.app_command_lock:
+            try:
+                await self.coordinator.app_control.start(self.coordinator.selected_app)
+            finally:
+                await self.coordinator.async_request_refresh()
+
 
 
 class ReachyMiniPlayMoveButton(ReachyMiniEntity, ButtonEntity):

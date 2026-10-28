@@ -74,7 +74,10 @@ async def async_setup_entry(
     """Create the motor-mode select plus any populated recorded-move selects."""
     coordinator: ReachyMiniCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    entities: list[SelectEntity] = [ReachyMiniMotorModeSelect(coordinator, entry)]
+    entities: list[SelectEntity] = [
+        ReachyMiniMotorModeSelect(coordinator, entry),
+        ReachyMiniAppSelect(coordinator, entry),
+    ]
     for description in RECORDED_MOVE_SELECTS:
         # Skip datasets the daemon didn't return moves for — keeps the
         # device card clean on older daemons or Lite installs.
@@ -171,3 +174,37 @@ class ReachyMiniRecordedMoveSelect(ReachyMiniEntity, SelectEntity, RestoreEntity
             self.coordinator.selected_move[
                 self.entity_description.dataset
             ] = last_state.state
+
+
+class ReachyMiniAppSelect(ReachyMiniEntity, SelectEntity, RestoreEntity):
+    """Remember an app choice in HA; never change the robot's startup setting."""
+
+    entity_description = SelectEntityDescription(
+        key="app", translation_key="app", name="App", icon="mdi:apps",
+    )
+
+    def __init__(self, coordinator: ReachyMiniCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry, "app")
+
+    @property
+    def options(self) -> list[str]:
+        return self.coordinator.installed_apps
+
+    @property
+    def current_option(self) -> str | None:
+        selected = self.coordinator.selected_app
+        return selected if selected in self.options else None
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in self.options:
+            raise HomeAssistantError("App is not in the installed-app list")
+        self.coordinator.selected_app = option
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        previous = await self.async_get_last_state()
+        if previous is not None and previous.state in self.options:
+            self.coordinator.selected_app = previous.state
+        elif len(self.options) == 1:
+            self.coordinator.selected_app = self.options[0]

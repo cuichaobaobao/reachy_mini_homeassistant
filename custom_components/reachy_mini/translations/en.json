@@ -40,6 +40,7 @@
       "mic_volume": { "name": "Microphone volume" }
     },
     "select": {
+      "app": { "name": "App" },
       "motor_mode": { "name": "Motor mode" },
       "emotion": {
         "name": "Emotion",
@@ -168,8 +169,9 @@
       }
     },
     "button": {
+      "start_selected_app": { "name": "Start selected app" },
       "wake_up": { "name": "Wake up" },
-      "goto_sleep": { "name": "Go to sleep" },
+      "goto_sleep": { "name": "Sleep and stop backend" },
       "stop_current_app": { "name": "Stop current app" },
       "restart_current_app": { "name": "Restart current app" },
       "play_test_sound": { "name": "Play test sound" },

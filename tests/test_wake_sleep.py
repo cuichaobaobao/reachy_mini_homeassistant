@@ -1,6 +1,6 @@
 """Wake/sleep behavior across daemon states.
 
-On the Wireless unit "asleep" means the daemon backend is fully
+A sleeping robot may retain a running backend. When it is fully
 stopped (`/api/daemon/status` → state "stopped", backend_status null).
 In that state every `/api/motors/*` and `/api/move/*` endpoint returns
 503 "Backend not running", so:
@@ -47,6 +47,7 @@ def _mock_poll_endpoints(
     # Backend-gated endpoints 503 while the backend is down; keep them
     # failing in all tests — the fields under test don't come from them.
     aioclient_mock.get(f"{BASE_URL}/api/daemon/robot-app-lock-status", status=503)
+    aioclient_mock.get(f"{BASE_URL}/api/apps/list-available/installed", json=[])
     aioclient_mock.get(f"{BASE_URL}/api/state/doa", status=503)
     aioclient_mock.get(f"{BASE_URL}/api/volume/current", status=503)
     aioclient_mock.get(f"{BASE_URL}/api/volume/microphone/current", status=503)
@@ -124,37 +125,20 @@ async def test_wake_button_enables_motors_before_wake_move_when_running(
     ]
 
 
-async def test_sleep_button_stops_daemon_when_running(
-    hass, coordinator, config_entry, aioclient_mock
+async def test_sleep_button_delegates_and_refreshes(
+    hass, coordinator, config_entry
 ) -> None:
-    """Sleep mirrors the dashboard: daemon stop with goto_sleep."""
-    coordinator.async_set_updated_data(
-        {"daemon_state": "running", "motor_mode": "enabled"}
-    )
-    aioclient_mock.post(
-        f"{BASE_URL}/api/daemon/stop?goto_sleep=true", json={"job_id": "1"}
-    )
+    """The existing entity ID now delegates to the safe shutdown sequence."""
     button = ReachyMiniGotoSleepButton(coordinator, config_entry)
-
-    with patch.object(coordinator, "async_request_refresh", AsyncMock()):
+    with (
+        patch.object(coordinator.app_control, "sleep", AsyncMock()) as sleep,
+        patch.object(coordinator, "async_request_refresh", AsyncMock()) as refresh,
+    ):
         await button.async_press()
-
-    assert _posts(aioclient_mock) == [
-        ("POST", "/api/daemon/stop", "goto_sleep=true"),
-    ]
-
-
-async def test_sleep_button_errors_when_already_asleep(
-    hass, coordinator, config_entry, aioclient_mock
-) -> None:
-    """Pressing sleep while stopped surfaces a friendly error, no HTTP."""
-    coordinator.async_set_updated_data({"daemon_state": "stopped"})
-    button = ReachyMiniGotoSleepButton(coordinator, config_entry)
-
-    with pytest.raises(HomeAssistantError, match="asleep"):
-        await button.async_press()
-
-    assert not aioclient_mock.mock_calls
+    sleep.assert_awaited_once()
+    refresh.assert_awaited_once()
+    assert button.entity_description.key == "goto_sleep"
+    assert button.entity_description.name == "Sleep and stop backend"
 
 
 async def test_motor_mode_select_errors_when_daemon_stopped(

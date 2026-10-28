@@ -40,6 +40,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .app_control import APP_LIST, AppControl
 from .const import (
     DAEMON_STATE_RUNNING,
     DEFAULT_PORT,
@@ -113,6 +114,10 @@ class ReachyMiniCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self._entry = entry
         self._session = async_get_clientsession(hass)
+        self.app_control = AppControl(self._session, self.base_url)
+        self.app_command_lock = asyncio.Lock()
+        self.installed_apps: list[str] = []
+        self.selected_app: str | None = None
         # Recorded-move catalogs. Populated once at setup-time via
         # async_load_move_lists. Stable at runtime — not in the per-tick
         # fan-out poll. Keyed by full HF dataset path.
@@ -154,7 +159,8 @@ class ReachyMiniCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None
 
     async def async_post(
-        self, path: str, *, body: dict[str, Any] | None = None
+        self, path: str, *, body: dict[str, Any] | None = None,
+        timeout: float = DEFAULT_TIMEOUT
     ) -> None:
         """POST to a daemon endpoint and refresh coordinator state.
 
@@ -170,7 +176,7 @@ class ReachyMiniCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             async with self._session.post(
                 url,
                 json=body,
-                timeout=aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT),
+                timeout=aiohttp.ClientTimeout(total=timeout),
             ) as resp:
                 resp.raise_for_status()
         except (aiohttp.ClientError, TimeoutError) as err:
@@ -180,12 +186,13 @@ class ReachyMiniCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Poll all endpoints in parallel and assemble the unified dict."""
-        status, app_lock, doa, vol_speaker, vol_mic = await asyncio.gather(
+        status, app_lock, doa, vol_speaker, vol_mic, apps = await asyncio.gather(
             self._fetch_json(ENDPOINT_STATUS),
             self._fetch_json(ENDPOINT_APP_LOCK),
             self._fetch_json(ENDPOINT_DOA),
             self._fetch_json(ENDPOINT_VOLUME_SPEAKER),
             self._fetch_json(ENDPOINT_VOLUME_MIC),
+            self._fetch_json(APP_LIST),
         )
 
         # If *every* endpoint is None, the daemon is completely
@@ -193,6 +200,12 @@ class ReachyMiniCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # device unavailable. Otherwise, surface what we have.
         if all(x is None for x in (status, app_lock, doa, vol_speaker, vol_mic)):
             raise UpdateFailed(f"Cannot reach Reachy Mini at {self.base_url}")
+
+        if isinstance(apps, list) and all(
+            isinstance(app, dict) and isinstance(app.get("name"), str) and app["name"]
+            for app in apps
+        ):
+            self.installed_apps = sorted({app["name"] for app in apps})
 
         data: dict[str, Any] = {
             # Identity / health from /api/daemon/status
@@ -273,3 +286,7 @@ class ReachyMiniCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.async_post(
             ENDPOINT_MOVE_PLAY.format(dataset=dataset, move=move)
         )
+
+    async def async_load_apps(self) -> None:
+        """Refresh installed choices without changing the robot's Startup app."""
+        self.installed_apps = await self.app_control.installed_apps()
