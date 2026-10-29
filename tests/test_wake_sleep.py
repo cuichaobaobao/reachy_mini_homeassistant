@@ -44,6 +44,8 @@ def _mock_poll_endpoints(
             "backend_status": backend,
         },
     )
+    for path in ("/api/apps/current-app-status", "/api/state/full", "/api/move/running"):
+        aioclient_mock.get(BASE_URL + path, status=503)
     # Backend-gated endpoints 503 while the backend is down; keep them
     # failing in all tests — the fields under test don't come from them.
     aioclient_mock.get(f"{BASE_URL}/api/daemon/robot-app-lock-status", status=503)

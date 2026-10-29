@@ -36,6 +36,16 @@
       "speech_detected": { "name": "Speech detected" }
     },
     "number": {
+      "head_x": { "name": "Head X" },
+      "head_y": { "name": "Head Y" },
+      "head_z": { "name": "Head Z" },
+      "head_roll": { "name": "Head roll" },
+      "head_pitch": { "name": "Head pitch" },
+      "head_yaw": { "name": "Head yaw" },
+      "body_yaw": { "name": "Body yaw" },
+      "left_antenna": { "name": "Left antenna" },
+      "right_antenna": { "name": "Right antenna" },
+      "movement_duration": { "name": "Movement duration" },
       "speaker_volume": { "name": "Speaker volume" },
       "mic_volume": { "name": "Microphone volume" }
     },
@@ -169,6 +179,10 @@
       }
     },
     "button": {
+      "power_off": { "name": "Power Off" },
+      "center_head": { "name": "Center head" },
+      "center_body": { "name": "Center body" },
+      "center_all": { "name": "Center all" },
       "start_selected_app": { "name": "Start selected app" },
       "wake_up": { "name": "Wake up" },
       "goto_sleep": { "name": "Sleep and stop backend" },
@@ -178,6 +192,9 @@
       "restart_daemon": { "name": "Restart daemon" },
       "play_emotion": { "name": "Play emotion" },
       "play_dance": { "name": "Play dance" }
+    },
+    "switch": {
+      "head_follows_body": { "name": "Head follows body" }
     },
     "camera": {
       "camera": { "name": "Camera" }

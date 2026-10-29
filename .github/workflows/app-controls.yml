@@ -1,12 +1,13 @@
-name: App controls and release
+name: Robot controls and release
 on:
   push:
-    branches: [main, feature/app-lifecycle-controls]
+    branches: [main, feature/app-lifecycle-controls, feature/manual-motion-power-off]
     paths:
       - 'custom_components/**'
       - 'tests/**'
       - '.github/workflows/app-controls.yml'
-      - 'RELEASE_0.2.5.md'
+      - 'RELEASE_0.2.6.md'
+      - 'MANUAL_CONTROLS.md'
   workflow_dispatch:
 permissions:
   contents: read
@@ -16,6 +17,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'
@@ -30,13 +33,18 @@ jobs:
           from pathlib import Path
           path = "custom_components/reachy_mini/manifest.json"
           old = json.loads(subprocess.check_output(["git", "show", "HEAD:" + path]))
-          assert old["version"] == "0.2.5"
-          for name in ("", ".button", ".select", ".coordinator", ".app_control", ".camera", ".config_flow"):
+          assert old.pop("version") == "0.2.6"
+          previous = json.loads(subprocess.check_output(["git", "show", "v0.2.5:" + path]))
+          previous.pop("version")
+          assert old == previous, "Manifest changed beyond version"
+          protected = ["wheels", "custom_components/reachy_mini/stream.py", "custom_components/reachy_mini/camera.py", "custom_components/reachy_mini/app_control.py", "custom_components/reachy_mini/brand", "custom_components/reachy_mini/select.py", "custom_components/reachy_mini/services.py"]
+          assert not subprocess.check_output(["git", "diff", "v0.2.5", "HEAD", "--", *protected])
+          for name in ("", ".button", ".select", ".coordinator", ".app_control", ".camera", ".config_flow", ".number", ".switch", ".manual_control"):
               importlib.import_module("custom_components.reachy_mini" + name)
           assert json.loads(Path("custom_components/reachy_mini/strings.json").read_text()) == json.loads(Path("custom_components/reachy_mini/translations/en.json").read_text())
           PY
       - name: App controls and existing wake, motor and app-slot tests
-        run: python -m pytest -q tests/test_app_control.py tests/test_wake_sleep.py tests/test_app_slot.py
+        run: python -m pytest -q tests/test_app_control.py tests/test_wake_sleep.py tests/test_app_slot.py tests/test_manual_control.py
       - name: Existing camera resource regression
         run: python scripts/check_camera_resources.py
       - name: Existing media compatibility regression
@@ -59,19 +67,19 @@ jobs:
           import json, subprocess
           from pathlib import Path
           path = "custom_components/reachy_mini/manifest.json"
-          old = json.loads(subprocess.check_output(["git", "show", "v0.2.4:" + path]))
+          old = json.loads(subprocess.check_output(["git", "show", "v0.2.5:" + path]))
           new = json.loads(Path(path).read_text())
-          assert new.pop("version") == "0.2.5"
+          assert new.pop("version") == "0.2.6"
           old.pop("version")
           assert old == new
-          assert not subprocess.check_output(["git", "diff", "v0.2.4", "HEAD", "--", "wheels", "custom_components/reachy_mini/stream.py", "custom_components/reachy_mini/camera.py"])
+          assert not subprocess.check_output(["git", "diff", "v0.2.5", "HEAD", "--", "wheels", "custom_components/reachy_mini/stream.py", "custom_components/reachy_mini/camera.py", "custom_components/reachy_mini/app_control.py", "custom_components/reachy_mini/brand"])
           PY
       - name: Publish tested version
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.2.5 >/dev/null 2>&1; then
-            echo "Release v0.2.5 already exists; leaving it unchanged."
+          if gh release view v0.2.6 >/dev/null 2>&1; then
+            echo "Release v0.2.6 already exists; leaving it unchanged."
           else
-            gh release create v0.2.5 --target "$GITHUB_SHA" --title "0.2.5 — app controls and orderly sleep" --notes-file RELEASE_0.2.5.md
+            gh release create v0.2.6 --target "$GITHUB_SHA" --title "0.2.6 — manual controls and Power Off" --notes-file RELEASE_0.2.6.md
           fi

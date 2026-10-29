@@ -124,6 +124,9 @@ async def async_setup_entry(
         ReachyMiniWakeUpButton(coordinator, entry),
         ReachyMiniGotoSleepButton(coordinator, entry),
         ReachyMiniStartAppButton(coordinator, entry),
+        *(ReachyMiniManualButton(coordinator, entry, key, name) for key, name in (
+            ("power_off", "Power Off"), ("center_head", "Center head"),
+            ("center_body", "Center body"), ("center_all", "Center all"))),
         *(ReachyMiniButton(coordinator, entry, desc) for desc in BUTTONS),
     ]
     for description in PLAY_MOVE_BUTTONS:
@@ -264,3 +267,26 @@ class ReachyMiniPlayMoveButton(ReachyMiniEntity, ButtonEntity):
                 f"No {self.entity_description.name.lower()} selected"
             )
         await self.coordinator.async_play_recorded_move(dataset, move)
+
+
+class ReachyMiniManualButton(ReachyMiniEntity, ButtonEntity):
+    """Manual reset or desktop-style Wireless Power Off."""
+
+    def __init__(self, coordinator, entry, key, name):
+        super().__init__(coordinator, entry, key)
+        self.key = key
+        self.entity_description = ButtonEntityDescription(
+            key=key, name=name, translation_key=key,
+            icon="mdi:power" if key == "power_off" else "mdi:axis-arrow",
+        )
+
+    @property
+    def available(self):
+        return super().available and self.coordinator.manual_control.available(
+            power_off=self.key == "power_off")
+
+    async def async_press(self):
+        if self.key == "power_off":
+            await self.coordinator.manual_control.power_off()
+        else:
+            await self.coordinator.manual_control.move(self.key)
