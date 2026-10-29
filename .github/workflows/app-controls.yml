@@ -17,6 +17,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'
@@ -31,7 +33,12 @@ jobs:
           from pathlib import Path
           path = "custom_components/reachy_mini/manifest.json"
           old = json.loads(subprocess.check_output(["git", "show", "HEAD:" + path]))
-          assert old["version"] == "0.2.6"
+          assert old.pop("version") == "0.2.6"
+          previous = json.loads(subprocess.check_output(["git", "show", "v0.2.5:" + path]))
+          previous.pop("version")
+          assert old == previous, "Manifest changed beyond version"
+          protected = ["wheels", "custom_components/reachy_mini/stream.py", "custom_components/reachy_mini/camera.py", "custom_components/reachy_mini/app_control.py", "custom_components/reachy_mini/brand", "custom_components/reachy_mini/select.py", "custom_components/reachy_mini/services.py"]
+          assert not subprocess.check_output(["git", "diff", "v0.2.5", "HEAD", "--", *protected])
           for name in ("", ".button", ".select", ".coordinator", ".app_control", ".camera", ".config_flow", ".number", ".switch", ".manual_control"):
               importlib.import_module("custom_components.reachy_mini" + name)
           assert json.loads(Path("custom_components/reachy_mini/strings.json").read_text()) == json.loads(Path("custom_components/reachy_mini/translations/en.json").read_text())

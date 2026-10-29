@@ -265,3 +265,50 @@ async def test_failed_control_poll_does_not_make_other_entities_unavailable(coor
     aioclient_mock.get(BASE_URL + "/api/move/running", status=503)
     assert await coordinator._poll_controls() == {
         "app_state": None, "full_state": None, "running_moves": None}
+
+
+@pytest.mark.parametrize("failed_path", ["/api/move/play/goto_sleep", "/api/motors/set_mode/disabled"])
+async def test_power_off_failure_is_reported_before_backend_stop(manual, failed_path):
+    async def request(method, path, body=None):
+        if path == "/api/apps/startup-app":
+            return {"startup_app": None}
+        if path == failed_path:
+            raise HomeAssistantError("failed")
+        return {"uuid": "sleep"}
+    manual.request.side_effect = request
+    with (
+        patch("custom_components.reachy_mini.manual_control.asyncio.sleep", AsyncMock()),
+        patch.object(manual.coordinator.app_control, "_backend_job", AsyncMock()) as stop,
+        pytest.raises(HomeAssistantError),
+    ):
+        await manual.power_off()
+    stop.assert_not_awaited()
+    assert not manual.busy
+
+
+async def test_poll_handles_running_and_stopping_app(coordinator):
+    client = coordinator.manual_control
+    for state in ("starting", "running", "stopping"):
+        async def request(method, path, body=None):
+            if path.endswith("current-app-status"):
+                return {"state": state, "info": {"name": "voice"}}
+            if path.endswith("/full"):
+                return ready()["full_state"]
+            return []
+        with patch.object(client, "request", AsyncMock(side_effect=request)):
+            data = ready()
+            data.update(await coordinator._poll_controls())
+            assert not cached_ready(data)
+
+
+def test_wrap_boundary_keeps_linked_head_body_offset():
+    start = pose_from_state(ready()["full_state"])
+    start["target_body_yaw"] = 2.4
+    start["target_head_pose"]["yaw"] = 3.1
+    end = make_target(start, "body_yaw", 2.7, True)
+    assert end["target_head_pose"]["yaw"] < 0
+    for t in (0.1, 0.5, 1):
+        p = interpolate(start, end, t, linked_body=True)
+        validate_target(p, True)
+        relative = rotate_with_body(p["target_head_pose"], -p["target_body_yaw"])
+        assert relative["yaw"] == pytest.approx(0.7)
