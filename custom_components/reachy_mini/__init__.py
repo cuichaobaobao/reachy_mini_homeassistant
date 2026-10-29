@@ -42,6 +42,7 @@ PLATFORMS: list[Platform] = [
     Platform.NUMBER,
     Platform.SELECT,
     Platform.BUTTON,
+    Platform.SWITCH,
 ]
 
 
@@ -67,7 +68,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id, None)
+        coordinator = hass.data[DOMAIN].pop(entry.entry_id, None)
+        if coordinator is not None:
+            await coordinator.manual_control.close()
         # Remove the service only when the last Reachy Mini entry is
         # gone; otherwise other entries would lose the service action.
         if not hass.data[DOMAIN]:

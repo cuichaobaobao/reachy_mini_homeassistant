@@ -41,6 +41,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .app_control import APP_LIST, AppControl
+from .manual_control import ManualControl, FULL_STATE, APP_STATUS, RUNNING_MOVES
 from .const import (
     DAEMON_STATE_RUNNING,
     DEFAULT_PORT,
@@ -116,6 +117,7 @@ class ReachyMiniCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._session = async_get_clientsession(hass)
         self.app_control = AppControl(self._session, self.base_url)
         self.app_command_lock = asyncio.Lock()
+        self.manual_control = ManualControl(self)
         self.installed_apps: list[str] = []
         self.selected_app: str | None = None
         # Recorded-move catalogs. Populated once at setup-time via
@@ -186,13 +188,14 @@ class ReachyMiniCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Poll all endpoints in parallel and assemble the unified dict."""
-        status, app_lock, doa, vol_speaker, vol_mic, apps = await asyncio.gather(
+        status, app_lock, doa, vol_speaker, vol_mic, apps, controls = await asyncio.gather(
             self._fetch_json(ENDPOINT_STATUS),
             self._fetch_json(ENDPOINT_APP_LOCK),
             self._fetch_json(ENDPOINT_DOA),
             self._fetch_json(ENDPOINT_VOLUME_SPEAKER),
             self._fetch_json(ENDPOINT_VOLUME_MIC),
             self._fetch_json(APP_LIST),
+            self._poll_controls(),
         )
 
         # If *every* endpoint is None, the daemon is completely
@@ -227,6 +230,8 @@ class ReachyMiniCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "mic_volume": None,
         }
 
+        data.update(controls)
+
         if isinstance(status, dict):
             data["firmware_version"] = status.get("version")
             data["hardware_id"] = status.get("hardware_id")
@@ -235,6 +240,7 @@ class ReachyMiniCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             data["daemon_state"] = daemon_state
             backend = status.get("backend_status") or {}
             motor_mode = backend.get("motor_control_mode")
+            data["hardware_error"] = backend.get("error") or status.get("error")
             data["motor_mode"] = motor_mode
             data["awake"] = _derive_awake(motor_mode, daemon_state)
 
@@ -256,6 +262,34 @@ class ReachyMiniCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             data["mic_volume"] = v if isinstance(v, int) and v >= 0 else None
 
         return data
+
+    async def _poll_controls(self) -> dict[str, Any]:
+        """Sample manual-control state on the existing poll, not before each write."""
+        from homeassistant.exceptions import HomeAssistantError
+
+        async def read(path):
+            try:
+                return True, await self.manual_control.request("GET", path)
+            except HomeAssistantError:
+                return False, None
+
+        app, full, moves = await asyncio.gather(
+            read(APP_STATUS), read(FULL_STATE), read(RUNNING_MOVES)
+        )
+        app_ok, app_value = app
+        app_state = None
+        if app_ok:
+            if app_value is None:
+                app_state = "done"
+            elif isinstance(app_value, dict):
+                candidate = app_value.get("state")
+                if candidate in {"starting", "running", "stopping", "done", "error"}:
+                    app_state = candidate
+        return {
+            "app_state": app_state,
+            "full_state": full[1] if full[0] and isinstance(full[1], dict) else None,
+            "running_moves": moves[1] if moves[0] and isinstance(moves[1], list) else None,
+        }
 
     async def async_load_move_lists(self) -> None:
         """Fetch the move name list for each known dataset (best-effort).

@@ -28,6 +28,7 @@ from .const import (
 )
 from .coordinator import ReachyMiniCoordinator
 from .entity import ReachyMiniEntity
+from .manual_control import LIMITS, NAMES, pose_from_state, value_of
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -76,7 +77,9 @@ async def async_setup_entry(
     """Create one ReachyMiniVolumeNumber per entry in :data:`NUMBERS`."""
     coordinator: ReachyMiniCoordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
-        ReachyMiniVolumeNumber(coordinator, entry, desc) for desc in NUMBERS
+        [*(ReachyMiniVolumeNumber(coordinator, entry, desc) for desc in NUMBERS),
+         *(ReachyMiniMotionNumber(coordinator, entry, key) for key in LIMITS),
+         ReachyMiniDurationNumber(coordinator, entry)]
     )
 
 
@@ -109,3 +112,69 @@ class ReachyMiniVolumeNumber(ReachyMiniEntity, NumberEntity):
             self.entity_description.set_path,
             body={"volume": int(value)},
         )
+
+
+class ReachyMiniMotionNumber(ReachyMiniEntity, NumberEntity):
+    """A manual target, displaying measured feedback from the normal poll."""
+
+    def __init__(self, coordinator, entry, key):
+        super().__init__(coordinator, entry, key)
+        self.key = key
+        low, high, step, unit = LIMITS[key]
+        self.entity_description = NumberEntityDescription(
+            key=key, name=NAMES[key], translation_key=key,
+            native_min_value=low, native_max_value=high, native_step=step,
+            native_unit_of_measurement=unit, mode=NumberMode.SLIDER,
+            icon="mdi:axis-arrow",
+        )
+
+    @property
+    def available(self):
+        return super().available and self.coordinator.manual_control.available()
+
+    @property
+    def native_min_value(self):
+        if self.key == "head_yaw" and self.coordinator.manual_control.follows:
+            return -3.141592653589793
+        return self.entity_description.native_min_value
+
+    @property
+    def native_max_value(self):
+        if self.key == "head_yaw" and self.coordinator.manual_control.follows:
+            return 3.141592653589793
+        return self.entity_description.native_max_value
+
+    @property
+    def native_value(self):
+        pose = pose_from_state((self.coordinator.data or {}).get("full_state"))
+        return value_of(pose, self.key) if pose is not None else None
+
+    async def async_set_native_value(self, value):
+        await self.coordinator.manual_control.move(self.key, value)
+
+
+class ReachyMiniDurationNumber(ReachyMiniEntity, NumberEntity):
+    """Integration-local movement preference; never sends a motor command."""
+
+    entity_description = NumberEntityDescription(
+        key="movement_duration", name="Movement duration", translation_key="movement_duration",
+        native_min_value=0.5, native_max_value=5.0, native_step=0.1,
+        native_unit_of_measurement="s", mode=NumberMode.SLIDER, icon="mdi:timer-outline",
+    )
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry, "movement_duration")
+
+    @property
+    def native_value(self):
+        return self.coordinator.manual_control.duration
+
+    async def async_set_native_value(self, value):
+        from .manual_control import finite
+        from homeassistant.exceptions import HomeAssistantError
+        if not finite(value) or not 0.5 <= value <= 5.0:
+            raise HomeAssistantError("Movement duration must be between 0.5 and 5 seconds")
+        if self.coordinator.manual_control.busy:
+            raise HomeAssistantError("Wait for the current movement to finish")
+        self.coordinator.manual_control.duration = value
+        self.coordinator.async_update_listeners()
