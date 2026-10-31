@@ -36,7 +36,6 @@ from .const import (
 )
 from .coordinator import ReachyMiniCoordinator
 from .entity import ReachyMiniEntity
-from .manual_control import cached_ready
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -96,13 +95,10 @@ def app_running(coordinator: ReachyMiniCoordinator) -> bool:
     return (coordinator.data or {}).get("app_state") in ("starting", "running")
 
 
-def motion_idle(coordinator: ReachyMiniCoordinator) -> bool:
-    """The desktop's expressions gate: awake, no app/session, nothing else moving."""
-    return (
-        cached_ready(coordinator.data or {}) and not coordinator.move_playing
-        and not coordinator.manual_control.busy
-        and not coordinator.app_command_lock.locked()
-    )
+def robot_awake(coordinator: ReachyMiniCoordinator) -> bool:
+    """Moves need a running backend with torque on; asleep they would fail."""
+    data = coordinator.data or {}
+    return data.get("daemon_state") == DAEMON_STATE_RUNNING and data.get("awake") is True
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -287,15 +283,13 @@ class ReachyMiniPlayMoveButton(ReachyMiniEntity, ButtonEntity):
 
     @property
     def available(self) -> bool:
-        """Like the desktop: only when awake, idle and nothing else moves."""
-        return super().available and motion_idle(self.coordinator)
+        """Unavailable only while the robot sleeps, like the upstream service."""
+        return super().available and robot_awake(self.coordinator)
 
     async def async_press(self) -> None:
         """Read the matching select's pick and POST to the play endpoint."""
-        if not motion_idle(self.coordinator):
-            raise HomeAssistantError(
-                "Robot is not ready to play a move; check its state and active app"
-            )
+        if not robot_awake(self.coordinator):
+            raise HomeAssistantError("Reachy Mini is asleep; press Wake up first")
         dataset = self.entity_description.dataset
         move = self.coordinator.selected_move.get(dataset)
         if not move:

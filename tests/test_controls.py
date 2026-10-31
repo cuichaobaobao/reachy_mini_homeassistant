@@ -64,16 +64,23 @@ def dance(coordinator, config_entry):
 
 
 @pytest.mark.parametrize("patch_data", [
-    {"app_state": "running"}, {"app_state": "starting"}, {"active_app": "voice"},
-    {"awake": False}, {"daemon_state": "stopped"}, {"remote_session_active": True},
-    {"running_moves": [{"uuid": "u"}]}, {"hardware_error": "overload"},
+    {"awake": False}, {"awake": None}, {"daemon_state": "stopped"},
 ])
-async def test_play_buttons_follow_desktop_gating(dance, aioclient_mock, patch_data):
+async def test_play_buttons_wait_only_for_sleep(dance, aioclient_mock, patch_data):
     dance.coordinator.data.update(patch_data)
     assert not dance.available
-    with pytest.raises(HomeAssistantError):
+    with pytest.raises(HomeAssistantError, match="asleep"):
         await dance.async_press()
     assert not aioclient_mock.mock_calls
+
+
+@pytest.mark.parametrize("patch_data", [
+    {"app_state": "running"}, {"active_app": "voice"}, {"remote_session_active": True},
+    {"running_moves": [{"uuid": "u"}]},
+])
+async def test_play_buttons_allowed_while_awake(dance, patch_data):
+    dance.coordinator.data.update(patch_data)
+    assert dance.available
 
 
 async def test_play_blocks_manual_controls_until_move_ends(dance, config_entry, aioclient_mock):
@@ -93,7 +100,7 @@ async def test_play_blocks_manual_controls_until_move_ends(dance, config_entry, 
     ):
         await dance.async_press()
         assert c.move_playing
-        assert not dance.available and not slider.available
+        assert dance.available and not slider.available
         await c._move_watch
     assert not replies
     assert not c.move_playing

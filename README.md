@@ -148,7 +148,7 @@ the value actually applied.
 | Restart current app | `POST /api/apps/restart-current-app` | Stop + start the current app — handy if it got stuck. Available only while an app is running. |
 | Play test sound | `POST /api/volume/test-sound` | Plays `impatient1.wav` — quick speaker check. |
 | Restart daemon | `POST /api/daemon/restart` | Soft restart of the daemon process. Use sparingly. |
-| Play emotion | `POST /api/move/play/recorded-move-dataset/{dataset}/{move}` | Plays the emotion currently selected in the *Emotion* select entity. Like the desktop, available only when the robot is awake and idle (no app, session or other move). The `reachy_mini.play_recorded_move` service is not restricted. |
+| Play emotion | `POST /api/move/play/recorded-move-dataset/{dataset}/{move}` | Plays the emotion currently selected in the *Emotion* select entity. Unavailable only while the robot is asleep. Like the `reachy_mini.play_recorded_move` service, it may play while an app is running. |
 | Play dance | `POST /api/move/play/recorded-move-dataset/{dataset}/{move}` | Plays the dance currently selected in the *Dance* select entity. Same availability as *Play emotion*. |
 
 ### Recorded moves (emotions and dances)
