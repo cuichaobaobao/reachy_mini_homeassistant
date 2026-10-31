@@ -398,6 +398,46 @@ async def test_poll_handles_running_and_stopping_app(coordinator):
             assert not cached_ready(data)
 
 
+async def test_measured_pose_past_a_limit_does_not_block_control(manual):
+    # Seen on the robot: roll measured at 0.529 rad after a 0.5 rad target.
+    manual.coordinator.data["full_state"]["head_pose"]["roll"] = 0.529
+    with patch(SLEEP, AsyncMock()):
+        await manual.move("head_pitch", 0.2)
+    frames = [call[2] for call in posts(manual)]
+    rolls = [frame["target_head_pose"]["roll"] for frame in frames]
+    assert rolls[-1] == pytest.approx(0.5)
+    assert all(0.5 - 1e-9 <= roll <= 0.529 + 1e-9 for roll in rolls)
+    assert frames[-1]["target_head_pose"]["pitch"] == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize("key", ["center_head", "center_all"])
+async def test_center_recovers_from_pose_past_a_limit(manual, key):
+    manual.coordinator.data["full_state"]["head_pose"].update(roll=0.529, pitch=-0.83)
+    with patch(SLEEP, AsyncMock()):
+        await manual.move(key)
+    final = posts(manual)[-1][2]["target_head_pose"]
+    assert final["roll"] == pytest.approx(0) and final["pitch"] == pytest.approx(0)
+
+
+async def test_request_beyond_a_limit_is_still_rejected(manual):
+    manual.coordinator.data["full_state"]["head_pose"]["roll"] = 0.529
+    with pytest.raises(HomeAssistantError):
+        await manual.move("head_roll", 0.6)
+    assert posts(manual) == []
+
+
+def test_path_may_only_stay_where_the_robot_already_is():
+    start = pose_from_state(ready()["full_state"])
+    start["target_head_pose"]["roll"] = 0.529
+    validate_target(start, False, around=start)
+    with pytest.raises(HomeAssistantError):
+        validate_target(start, False)
+    beyond = copy.deepcopy(start)
+    beyond["target_head_pose"]["roll"] = 0.54
+    with pytest.raises(HomeAssistantError):
+        validate_target(beyond, False, around=start)
+
+
 def test_wrap_boundary_keeps_linked_head_body_offset():
     start = pose_from_state(ready()["full_state"])
     start["target_body_yaw"] = 2.4
