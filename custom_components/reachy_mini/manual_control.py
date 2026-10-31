@@ -1,8 +1,12 @@
 """Manual controls using cached state and the desktop's set_target REST fallback.
 
 No SDK dependency, control-slot acquisition or app/slot/motor preflight GETs.
-A movement reads the current pose once, then a single writer sends a short,
-paced trajectory; a newer command during it is folded into the same trajectory.
+Aligned with the desktop controller: targets are clamped into its ranges, the
+head/body yaw limit is left to the daemon's automatic body yaw, a movement
+continues from the last target HA sent unless the robot was moved elsewhere,
+and Head X, pitch and yaw use the desktop's display signs. A single writer
+sends a short, paced trajectory; a newer command during it is folded into the
+same trajectory.
 """
 from __future__ import annotations
 
@@ -16,7 +20,6 @@ from homeassistant.exceptions import HomeAssistantError
 
 HEAD_KEYS = ("x", "y", "z", "roll", "pitch", "yaw")
 BODY_LIMIT = math.radians(160)
-RELATIVE_YAW_LIMIT = math.radians(65)
 LIMITS = {
     "head_x": (-0.05, 0.05, 0.001, "m"),
     "head_y": (-0.05, 0.05, 0.001, "m"),
@@ -34,6 +37,11 @@ NAMES = {
     "body_yaw": "Body yaw", "left_antenna": "Left antenna",
     "right_antenna": "Right antenna",
 }
+# The desktop shows these axes with the API sign inverted (ROBOT_TO_API_MAPPINGS):
+# positive is forward, up and right on screen.
+DISPLAY_SIGN = {"head_x": -1.0, "head_pitch": -1.0, "head_yaw": -1.0}
+# Desktop INPUT_THRESHOLDS.MAJOR_CHANGE: a larger gap means the robot moved elsewhere.
+MAJOR_CHANGE = 0.1
 FULL_STATE = "/api/state/full"
 APP_STATUS = "/api/apps/current-app-status"
 RUNNING_MOVES = "/api/move/running"
@@ -76,11 +84,23 @@ def cached_ready(data: dict, *, power_off: bool = False) -> bool:
 
 
 def value_of(pose: dict, key: str) -> float:
+    """The value shown in HA: the API value with the desktop's display sign."""
     if key.startswith("head_"):
-        return pose["target_head_pose"][key[5:]]
-    if key == "body_yaw":
-        return pose["target_body_yaw"]
-    return pose["target_antennas"][0 if key == "left_antenna" else 1]
+        value = pose["target_head_pose"][key[5:]]
+    elif key == "body_yaw":
+        value = pose["target_body_yaw"]
+    else:
+        value = pose["target_antennas"][0 if key == "left_antenna" else 1]
+    return DISPLAY_SIGN.get(key, 1.0) * value
+
+
+def pose_distance(a: dict, b: dict) -> float:
+    """Sum of absolute differences, like the desktop's poseSnapshotDistance."""
+    return (
+        sum(abs(a["target_head_pose"][k] - b["target_head_pose"][k]) for k in HEAD_KEYS)
+        + abs(a["target_body_yaw"] - b["target_body_yaw"])
+        + sum(abs(x - y) for x, y in zip(a["target_antennas"], b["target_antennas"]))
+    )
 
 
 def rotate_with_body(head: dict, delta: float) -> dict:
@@ -93,19 +113,39 @@ def rotate_with_body(head: dict, delta: float) -> dict:
     return result
 
 
+def clamp_into_limits(pose: dict, follows: bool, around: dict | None = None) -> dict:
+    """Clamp into the desktop ranges, widened only to ``around`` (where the robot already is)."""
+    result = copy.deepcopy(pose)
+    head = result["target_head_pose"]
+    near = around["target_head_pose"] if around is not None else None
+    for key in HEAD_KEYS:
+        low, high, _, _ = LIMITS["head_" + key]
+        if key == "yaw" and follows:
+            low, high = -math.pi, math.pi
+        if near is not None:
+            low, high = min(low, near[key]), max(high, near[key])
+        head[key] = min(max(head[key], low), high)
+    body = BODY_LIMIT if around is None else max(BODY_LIMIT, abs(around["target_body_yaw"]))
+    result["target_body_yaw"] = min(max(result["target_body_yaw"], -body), body)
+    limits = ([BODY_LIMIT, BODY_LIMIT] if around is None
+              else [max(BODY_LIMIT, abs(a)) for a in around["target_antennas"]])
+    result["target_antennas"] = [min(max(a, -limit), limit)
+                                 for a, limit in zip(result["target_antennas"], limits)]
+    return result
+
+
 def make_target(start: dict, key: str, value: float | None, follows: bool) -> dict:
+    """Like the desktop: values outside a range are clamped, not rejected."""
     target = copy.deepcopy(start)
     head = target["target_head_pose"]
     if key in LIMITS:
-        low, high, _, _ = LIMITS[key]
-        # Linked yaw is a world heading; the neck's relative limit is checked below.
-        if key == "head_yaw" and follows:
-            low, high = -math.pi, math.pi
-        if not finite(value) or not low <= value <= high:
-            raise HomeAssistantError(f"{NAMES[key]} must be between {low:g} and {high:g}")
+        if not finite(value):
+            raise HomeAssistantError(f"{NAMES[key]} must be a number")
+        value = DISPLAY_SIGN.get(key, 1.0) * value
         if key.startswith("head_"):
             head[key[5:]] = value
         elif key == "body_yaw":
+            value = min(max(value, -BODY_LIMIT), BODY_LIMIT)
             target["target_body_yaw"] = value
             if follows:
                 target["target_head_pose"] = rotate_with_body(head, value - start["target_body_yaw"])
@@ -125,53 +165,8 @@ def make_target(start: dict, key: str, value: float | None, follows: bool) -> di
             target["target_antennas"] = [0.0, 0.0]
     else:
         raise HomeAssistantError("Unknown manual control")
-    validate_target(target, follows)
-    return target
-
-
-def clamp_into_limits(pose: dict, follows: bool) -> dict:
-    """Pull a measured pose that sits slightly past a limit back onto it."""
-    result = copy.deepcopy(pose)
-    head = result["target_head_pose"]
-    for key in HEAD_KEYS:
-        low, high, _, _ = LIMITS["head_" + key]
-        if key == "yaw" and follows:
-            low, high = -math.pi, math.pi
-        head[key] = min(max(head[key], low), high)
-    result["target_body_yaw"] = min(max(result["target_body_yaw"], -BODY_LIMIT), BODY_LIMIT)
-    result["target_antennas"] = [min(max(a, -BODY_LIMIT), BODY_LIMIT)
-                                 for a in result["target_antennas"]]
-    relative = wrap(head["yaw"] - result["target_body_yaw"])
-    if abs(relative) > RELATIVE_YAW_LIMIT:
-        head["yaw"] = wrap(result["target_body_yaw"] + math.copysign(RELATIVE_YAW_LIMIT, relative))
-    return result
-
-
-def validate_target(target: dict, follows: bool, around: dict | None = None) -> None:
-    """Check limits; ``around`` (the start pose) widens them to where the robot already is."""
-    head = target["target_head_pose"]
-    near = around["target_head_pose"] if around is not None else None
-    for key in HEAD_KEYS:
-        low, high, _, _ = LIMITS["head_" + key]
-        if key == "yaw" and follows:
-            low, high = -math.pi, math.pi
-        if near is not None:
-            low, high = min(low, near[key]), max(high, near[key])
-        if not finite(head[key]) or not low - 1e-8 <= head[key] <= high + 1e-8:
-            raise HomeAssistantError(f"Combined pose exceeds Head {key} range")
-    relative_limit, body_limit = RELATIVE_YAW_LIMIT, BODY_LIMIT
-    antenna_limits = [BODY_LIMIT, BODY_LIMIT]
-    if around is not None:
-        relative_limit = max(relative_limit, abs(wrap(near["yaw"] - around["target_body_yaw"])))
-        body_limit = max(body_limit, abs(around["target_body_yaw"]))
-        antenna_limits = [max(BODY_LIMIT, abs(a)) for a in around["target_antennas"]]
-    if abs(wrap(head["yaw"] - target["target_body_yaw"])) > relative_limit + 1e-8:
-        raise HomeAssistantError("Head/body relative yaw exceeds the daemon's 65 degree limit")
-    if abs(target["target_body_yaw"]) > body_limit + 1e-8:
-        raise HomeAssistantError("Body yaw exceeds the desktop range")
-    if any(not finite(a) or abs(a) > limit + 1e-8
-           for a, limit in zip(target["target_antennas"], antenna_limits)):
-        raise HomeAssistantError("Antenna target exceeds the desktop range")
+    # The head/body relative yaw is left to the daemon's automatic body yaw.
+    return clamp_into_limits(target, follows)
 
 
 def interpolate(start: dict, end: dict, t: float, *, linked_body: bool = False) -> dict:
@@ -207,6 +202,8 @@ class ManualControl:
         self._goal: dict | None = None
         self._sent: dict | None = None
         self._done: asyncio.Future | None = None
+        # Last target the daemon accepted from HA; the next movement starts here.
+        self._last: dict | None = None
 
     @property
     def busy(self) -> bool:
@@ -253,17 +250,23 @@ class ManualControl:
     async def move(self, key: str, value: float | None = None) -> None:
         if not self.available():
             raise HomeAssistantError(NOT_READY)
-        fresh = None
+        origin = None
         if self._worker is None:
-            # Start from a fresh pose, not one a poll cached before other motion.
             try:
-                fresh = pose_from_state(await self.request("GET", FULL_STATE))
+                measured = pose_from_state(await self.request("GET", FULL_STATE))
             except HomeAssistantError as err:
                 raise HomeAssistantError(POSE_ERROR) from err
-            if fresh is None:
+            if measured is None:
                 raise HomeAssistantError(POSE_ERROR)
             if not self.available():
                 raise HomeAssistantError(NOT_READY)
+            # Like the desktop, continue from our last target; only a larger gap
+            # means something else moved the robot (an app, a move, sleep).
+            last = self._last
+            if last is not None and pose_distance(measured, last) <= MAJOR_CHANGE:
+                origin = last
+            else:
+                origin = measured
         merging = self._worker is not None
         # While moving, continue from the frame being sent toward the combined goal.
         # A measured pose may sit slightly past a limit (e.g. roll 0.53 after a
@@ -271,17 +274,16 @@ class ManualControl:
         if merging:
             start, base = self._sent, self._goal
         else:
-            start, base = fresh, clamp_into_limits(fresh, self.follows)
+            start, base = origin, clamp_into_limits(origin, self.follows)
         end = make_target(base, key, value, self.follows)
         linked = (not merging and base == start and self.follows
                   and key in ("body_yaw", "center_body"))
         steps = max(1, math.ceil(self.duration / 0.05))
-        # Validate the entire sampled path before sending any target; it may
-        # not go past where the robot already is.
-        frames = [interpolate(start, end, i / steps, linked_body=linked)
+        # Every sampled frame is clamped; it may stay where the robot already is
+        # but never goes further out.
+        frames = [clamp_into_limits(interpolate(start, end, i / steps, linked_body=linked),
+                                    self.follows, around=start)
                   for i in range(1, steps + 1)]
-        for frame in frames:
-            validate_target(frame, self.follows, around=start)
         if self._done is not None and not self._done.done():
             self._done.set_result(None)  # the earlier goal is part of this one
         self._goal, self._frames = end, frames
@@ -318,6 +320,7 @@ class ManualControl:
                                 "A recorded move is playing; try again when it finishes")
                         if not isinstance(result, dict) or result.get("status") != "ok":
                             raise HomeAssistantError("Daemon did not accept the manual target")
+                        self._last = frame
                         # Do not burst delayed frames after a slow network request.
                         began = max(began, loop.time() - i * step)
                     else:

@@ -147,7 +147,8 @@ class ReachyMiniMotionNumber(ReachyMiniEntity, NumberEntity):
     @property
     def native_value(self):
         pose = pose_from_state((self.coordinator.data or {}).get("full_state"))
-        return value_of(pose, self.key) if pose is not None else None
+        # Three decimals, like the desktop slider labels.
+        return round(value_of(pose, self.key), 3) + 0.0 if pose is not None else None
 
     async def async_set_native_value(self, value):
         await self.coordinator.manual_control.move(self.key, value)
