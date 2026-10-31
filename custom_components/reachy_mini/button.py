@@ -54,7 +54,7 @@ WAKE_UP_DESCRIPTION = ButtonEntityDescription(
 GOTO_SLEEP_DESCRIPTION = ButtonEntityDescription(
     key="goto_sleep",
     translation_key="goto_sleep",
-    name="Sleep and stop backend",
+    name="Go to sleep",
     icon="mdi:sleep",
 )
 
@@ -85,6 +85,20 @@ BUTTONS: tuple[ReachyMiniButtonDescription, ...] = (
         icon="mdi:server-network",
     ),
 )
+
+
+APP_BUTTONS = {ENDPOINT_APP_STOP_CURRENT, ENDPOINT_APP_RESTART_CURRENT}
+
+
+def app_running(coordinator: ReachyMiniCoordinator) -> bool:
+    """The desktop offers stop/restart only on the running app."""
+    return (coordinator.data or {}).get("app_state") in ("starting", "running")
+
+
+def robot_awake(coordinator: ReachyMiniCoordinator) -> bool:
+    """Moves need a running backend with torque on; asleep they would fail."""
+    data = coordinator.data or {}
+    return data.get("daemon_state") == DAEMON_STATE_RUNNING and data.get("awake") is True
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -155,9 +169,18 @@ class ReachyMiniButton(ReachyMiniEntity, ButtonEntity):
         super().__init__(coordinator, entry, description.key)
         self.entity_description = description
 
+    @property
+    def available(self) -> bool:
+        """Stop/restart exist only while an app runs, like the desktop."""
+        if self.entity_description.post_path in APP_BUTTONS:
+            return super().available and app_running(self.coordinator)
+        return super().available
+
     async def async_press(self) -> None:
         """POST to the button's endpoint; coordinator refreshes on success."""
         path = self.entity_description.post_path
+        if path in APP_BUTTONS and not app_running(self.coordinator):
+            raise HomeAssistantError("No app is currently running")
         if path in {ENDPOINT_APP_STOP_CURRENT, ENDPOINT_APP_RESTART_CURRENT, ENDPOINT_DAEMON_RESTART}:
             async with self.coordinator.app_command_lock:
                 await self.coordinator.async_post(path, timeout=35)
@@ -258,8 +281,15 @@ class ReachyMiniPlayMoveButton(ReachyMiniEntity, ButtonEntity):
         super().__init__(coordinator, entry, description.key)
         self.entity_description = description
 
+    @property
+    def available(self) -> bool:
+        """Unavailable only while the robot sleeps, like the upstream service."""
+        return super().available and robot_awake(self.coordinator)
+
     async def async_press(self) -> None:
         """Read the matching select's pick and POST to the play endpoint."""
+        if not robot_awake(self.coordinator):
+            raise HomeAssistantError("Reachy Mini is asleep; press Wake up first")
         dataset = self.entity_description.dataset
         move = self.coordinator.selected_move.get(dataset)
         if not move:

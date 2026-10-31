@@ -1,4 +1,4 @@
-# Manual controls (0.2.6)
+# Manual controls (0.2.7)
 
 These controls belong to the HA integration. They do not change the voice app,
 daemon, host services or camera path.
@@ -38,12 +38,16 @@ is mechanically reachable. Limits apply to sampled trajectory points too.
 
 The integration uses its normal 30-second coordinator poll plus post-action
 refresh. It adds GETs for /api/apps/current-app-status, /api/state/full and
-/api/move/running to that poll. Each manual action uses this cached state;
-it does not first query app status, app ownership and motor mode.
+/api/move/running to that poll. Availability uses this cached state; no app status, app ownership or motor
+mode query precedes an action. A movement reads /api/state/full once for a fresh
+start pose and sends nothing if that read fails. While the backend runs, one or
+two failed pose reads in the poll keep the last pose instead of greying out.
 
 Controls are unavailable when the backend is not running, the robot is not awake,
 an app/session is active, a move is running, relevant state is unknown, a hardware
-error is reported or an integration lifecycle command is in progress.
+error is reported, an integration lifecycle command is in progress or a recorded
+move started from HA is playing. The integration's own movement does not make
+the controls unavailable.
 The existing app-slot data contributes to the cached active-app/session state;
 manual controls do not acquire the app lock or issue a separate ownership query.
 
@@ -61,9 +65,13 @@ only during a user action. A slow network stretches the duration instead of
 bursting overdue frames. No idle command writer or permanent control WebSocket
 is created. The requested duration is nominal, not a real-time guarantee.
 
-A daemon 'ignored' response is an action failure, not success. New cached busy
-state interrupts remaining frames. Only one HA manual action runs at a time;
-additional actions fail rather than queue stale targets. Unloading the
+A daemon 'ignored' response (a recorded move is playing) is an action failure,
+not success. New cached busy
+state interrupts remaining frames. One writer runs at a time: a new
+action during a movement continues from the frame being sent toward the combined
+target (the earlier change plus the new one) instead of failing or queueing
+stale targets. Head follows body linking along the path applies to a movement
+that starts fresh; a combined path is still validated sample by sample. Unloading the
 integration cancels any remaining HA writes. Accepted targets are not proof of
 physical arrival; the next refresh displays measured feedback.
 
@@ -80,7 +88,7 @@ with goto_sleep=false and waits for that job. It does not power down Linux.
 Unlike desktop best-effort shutdown, a request/configuration failure is surfaced
 instead of silently continuing. A sleep UUID acknowledges scheduling, not
 physical arrival. No force-stop of an active app is performed by this button.
-Existing Sleep and stop backend retains its own unchanged app-stop sequence.
+Go to sleep (formerly named Sleep and stop backend) keeps its own app-stop sequence.
 
 ## Validation
 

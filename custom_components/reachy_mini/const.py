@@ -44,6 +44,7 @@ ENDPOINT_APP_STOP_CURRENT = "/api/apps/stop-current-app"
 ENDPOINT_APP_RESTART_CURRENT = "/api/apps/restart-current-app"
 ENDPOINT_VOLUME_TEST_SOUND = "/api/volume/test-sound"
 ENDPOINT_DAEMON_RESTART = "/api/daemon/restart"
+ENDPOINT_APP_STARTUP = "/api/apps/startup-app"
 
 # Motor mode values — must match the SDK's MotorControlMode enum
 # `.value` strings. Kept here as a tuple so the select dropdown

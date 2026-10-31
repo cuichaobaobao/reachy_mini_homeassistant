@@ -1,6 +1,6 @@
 """Select entities for Reachy Mini.
 
-Two kinds:
+Kinds:
 
 - ``Motor mode`` — writable read-back of the daemon's motor control
   mode. Picking an option POSTs to ``/api/motors/set_mode/{mode}``.
@@ -9,6 +9,9 @@ Two kinds:
   ``coordinator.async_load_move_lists``). Selecting does NOT play —
   that's the matching ``Play emotion`` / ``Play dance`` button's job.
   Survives HA restarts via ``RestoreEntity``.
+- ``App to start`` — HA's pick for *Start selected app*.
+- ``Startup app`` — the robot's own Startup app setting, read on the
+  normal poll and written with ``PUT /api/apps/startup-app`` like the desktop.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ from .const import (
     DANCES_DATASET,
     DOMAIN,
     EMOTIONS_DATASET,
+    ENDPOINT_APP_STARTUP,
     ENDPOINT_MOTOR_SET_MODE,
     MOTOR_MODES,
 )
@@ -77,6 +81,7 @@ async def async_setup_entry(
     entities: list[SelectEntity] = [
         ReachyMiniMotorModeSelect(coordinator, entry),
         ReachyMiniAppSelect(coordinator, entry),
+        ReachyMiniStartupAppSelect(coordinator, entry),
     ]
     for description in RECORDED_MOVE_SELECTS:
         # Skip datasets the daemon didn't return moves for — keeps the
@@ -180,7 +185,7 @@ class ReachyMiniAppSelect(ReachyMiniEntity, SelectEntity, RestoreEntity):
     """Remember an app choice in HA; never change the robot's startup setting."""
 
     entity_description = SelectEntityDescription(
-        key="app", translation_key="app", name="App", icon="mdi:apps",
+        key="app", translation_key="app", name="App to start", icon="mdi:apps",
     )
 
     def __init__(self, coordinator: ReachyMiniCoordinator, entry: ConfigEntry) -> None:
@@ -208,3 +213,45 @@ class ReachyMiniAppSelect(ReachyMiniEntity, SelectEntity, RestoreEntity):
             self.coordinator.selected_app = previous.state
         elif len(self.options) == 1:
             self.coordinator.selected_app = self.options[0]
+
+
+NO_STARTUP_APP = "None"
+
+
+class ReachyMiniStartupAppSelect(ReachyMiniEntity, SelectEntity):
+    """The robot's Startup app setting, read and written like the desktop."""
+
+    entity_description = SelectEntityDescription(
+        key="startup_app", translation_key="startup_app", name="Startup app",
+        icon="mdi:rocket-launch",
+    )
+
+    def __init__(self, coordinator: ReachyMiniCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry, "startup_app")
+
+    @property
+    def available(self) -> bool:
+        return super().available and bool((self.coordinator.data or {}).get("startup_app_known"))
+
+    @property
+    def options(self) -> list[str]:
+        current = (self.coordinator.data or {}).get("startup_app")
+        apps = list(self.coordinator.installed_apps)
+        if current and current not in apps:
+            apps.append(current)
+        return [NO_STARTUP_APP, *apps]
+
+    @property
+    def current_option(self) -> str | None:
+        data = self.coordinator.data or {}
+        if not data.get("startup_app_known"):
+            return None
+        return data.get("startup_app") or NO_STARTUP_APP
+
+    async def async_select_option(self, option: str) -> None:
+        if option != NO_STARTUP_APP and option not in self.coordinator.installed_apps:
+            raise HomeAssistantError("App is not in the installed-app list")
+        await self.coordinator.async_post(
+            ENDPOINT_APP_STARTUP, method="PUT",
+            body={"startup_app": None if option == NO_STARTUP_APP else option},
+        )

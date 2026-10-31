@@ -68,9 +68,11 @@ extra protocols, no broker, no auth.
 
 ## Use
 
-For everyday voice use, choose **App**, then press **Start selected app** or **Stop current app**. With only one installed app, it is selected on initial setup. Installed choices refresh every 30 seconds. The official conversation app and reachy_mini_ha_voice wake a sleeping robot during startup; other apps control their own posture.
+For everyday voice use, choose **App to start**, then press **Start selected app** or **Stop current app**. With only one installed app, it is selected on initial setup. Installed choices refresh every 30 seconds. The official conversation app and reachy_mini_ha_voice wake a sleeping robot during startup; other apps control their own posture.
 
-**Wake up** is a robot command, not a replacement for app Start. **Sleep and stop backend** is a stronger operation: it stops the app before shutting down the backend. If app shutdown fails or cannot be confirmed, backend shutdown is not requested. A remote control session must be ended first. Do not send conflicting lifecycle commands from other clients during shutdown; the daemon does not provide an atomic stop-app-and-backend operation.
+**Wake up** is a robot command, not a replacement for app Start. **Go to sleep** is a stronger operation: it stops the app before shutting down the backend. If app shutdown fails or cannot be confirmed, backend shutdown is not requested. A remote control session must be ended first. Do not send conflicting lifecycle commands from other clients during shutdown; the daemon does not provide an atomic stop-app-and-backend operation.
+
+**Startup app** is the robot's own setting, the same one the desktop app changes. The robot starts it on the first wake after boot, and an antenna touch starts it while the backend runs. Choose `None` to clear it.
 
 
 1. Make sure your Reachy Mini daemon is running on the **same LAN**.
@@ -118,7 +120,8 @@ its stable `unit_id` (a hash of the audio device serial). Underneath:
 
 | Entity | Options | Notes |
 |---|---|---|
-| App | Installed app names | Remembered in HA. Does not modify the robot's Startup app setting. |
+| App to start | Installed app names | Remembered in HA for *Start selected app*. Does not modify the robot's Startup app setting. |
+| Startup app | `None` + installed app names | The robot's own Startup app setting (`PUT /api/apps/startup-app`), same as the desktop. |
 | Motor mode | `enabled` / `disabled` / `gravity_compensation` | Picking an option POSTs to `/api/motors/set_mode/{mode}`. Use `disabled` as a soft E-stop (motors release torque). |
 | Emotion | One entry per move in the emotions library | Stores the chosen emotion name; does not play it. Use the *Play emotion* button (or the `reachy_mini.play_recorded_move` service) to trigger playback. |
 | Dance | One entry per move in the dances library | Stores the chosen dance name; does not play it. Use the *Play dance* button (or the `reachy_mini.play_recorded_move` service) to trigger playback. |
@@ -139,14 +142,14 @@ the value actually applied.
 | Entity | Action | Notes |
 |---|---|---|
 | Wake up | Backend start with wake, or motor enable + wake move | Wakes the robot; does not explicitly start an app. |
-| Sleep and stop backend | Stop app, confirm exit, then `POST /api/daemon/stop?goto_sleep=true` | Stops speech app first, then sleeps and stops the backend. Antenna wake is unavailable until the backend runs again. Existing sleep entity ID is preserved. |
+| Go to sleep | Stop app, confirm exit, then `POST /api/daemon/stop?goto_sleep=true` | Stops speech app first, then sleeps and stops the backend. Antenna wake is unavailable until the backend runs again. Existing sleep entity ID is preserved. |
 | Start selected app | `POST /api/apps/start-app/{name}/no-evict` | Starts the selected installed app, starting a stopped backend first. Does not displace another app/session. Requires the no-evict route available in daemon 1.12.0. |
-| Stop current app | `POST /api/apps/stop-current-app` | Requests app shutdown. Daemon 1.12.0 then handles idle sleep, keeping its backend and configured antenna startup available. Errors if no app is running. |
-| Restart current app | `POST /api/apps/restart-current-app` | Stop + start the current app — handy if it got stuck. |
+| Stop current app | `POST /api/apps/stop-current-app` | Requests app shutdown. Daemon 1.12.0 then handles idle sleep, keeping its backend and configured antenna startup available. Available only while an app is starting or running, like the desktop. |
+| Restart current app | `POST /api/apps/restart-current-app` | Stop + start the current app — handy if it got stuck. Available only while an app is running. |
 | Play test sound | `POST /api/volume/test-sound` | Plays `impatient1.wav` — quick speaker check. |
 | Restart daemon | `POST /api/daemon/restart` | Soft restart of the daemon process. Use sparingly. |
-| Play emotion | `POST /api/move/play/recorded-move-dataset/{dataset}/{move}` | Plays the emotion currently selected in the *Emotion* select entity. |
-| Play dance | `POST /api/move/play/recorded-move-dataset/{dataset}/{move}` | Plays the dance currently selected in the *Dance* select entity. |
+| Play emotion | `POST /api/move/play/recorded-move-dataset/{dataset}/{move}` | Plays the emotion currently selected in the *Emotion* select entity. Unavailable only while the robot is asleep. Like the `reachy_mini.play_recorded_move` service, it may play while an app is running. |
+| Play dance | `POST /api/move/play/recorded-move-dataset/{dataset}/{move}` | Plays the dance currently selected in the *Dance* select entity. Same availability as *Play emotion*. |
 
 ### Recorded moves (emotions and dances)
 
