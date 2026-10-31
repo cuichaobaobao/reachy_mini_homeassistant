@@ -137,7 +137,7 @@ class ReachyMiniCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ds: None for ds in RECORDED_MOVE_DATASETS
         }
         # A recorded move HA started, until the daemon reports none running;
-        # manual controls and play buttons wait for it like the desktop.
+        # manual controls wait for it instead of being ignored by the daemon.
         self.move_playing = False
         self._move_watch: asyncio.Task | None = None
         self._missed_poses = 0
