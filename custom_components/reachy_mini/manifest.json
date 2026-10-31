@@ -1,7 +1,7 @@
 {
   "domain": "reachy_mini",
   "name": "Reachy Mini",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "documentation": "https://github.com/cuichaobaobao/reachy_mini_homeassistant",
   "issue_tracker": "https://github.com/cuichaobaobao/reachy_mini_homeassistant/issues",
   "codeowners": [

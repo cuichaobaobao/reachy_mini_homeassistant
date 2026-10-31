@@ -129,19 +129,48 @@ def make_target(start: dict, key: str, value: float | None, follows: bool) -> di
     return target
 
 
-def validate_target(target: dict, follows: bool) -> None:
-    head = target["target_head_pose"]
+def clamp_into_limits(pose: dict, follows: bool) -> dict:
+    """Pull a measured pose that sits slightly past a limit back onto it."""
+    result = copy.deepcopy(pose)
+    head = result["target_head_pose"]
     for key in HEAD_KEYS:
         low, high, _, _ = LIMITS["head_" + key]
         if key == "yaw" and follows:
             low, high = -math.pi, math.pi
+        head[key] = min(max(head[key], low), high)
+    result["target_body_yaw"] = min(max(result["target_body_yaw"], -BODY_LIMIT), BODY_LIMIT)
+    result["target_antennas"] = [min(max(a, -BODY_LIMIT), BODY_LIMIT)
+                                 for a in result["target_antennas"]]
+    relative = wrap(head["yaw"] - result["target_body_yaw"])
+    if abs(relative) > RELATIVE_YAW_LIMIT:
+        head["yaw"] = wrap(result["target_body_yaw"] + math.copysign(RELATIVE_YAW_LIMIT, relative))
+    return result
+
+
+def validate_target(target: dict, follows: bool, around: dict | None = None) -> None:
+    """Check limits; ``around`` (the start pose) widens them to where the robot already is."""
+    head = target["target_head_pose"]
+    near = around["target_head_pose"] if around is not None else None
+    for key in HEAD_KEYS:
+        low, high, _, _ = LIMITS["head_" + key]
+        if key == "yaw" and follows:
+            low, high = -math.pi, math.pi
+        if near is not None:
+            low, high = min(low, near[key]), max(high, near[key])
         if not finite(head[key]) or not low - 1e-8 <= head[key] <= high + 1e-8:
             raise HomeAssistantError(f"Combined pose exceeds Head {key} range")
-    if abs(wrap(head["yaw"] - target["target_body_yaw"])) > RELATIVE_YAW_LIMIT + 1e-8:
+    relative_limit, body_limit = RELATIVE_YAW_LIMIT, BODY_LIMIT
+    antenna_limits = [BODY_LIMIT, BODY_LIMIT]
+    if around is not None:
+        relative_limit = max(relative_limit, abs(wrap(near["yaw"] - around["target_body_yaw"])))
+        body_limit = max(body_limit, abs(around["target_body_yaw"]))
+        antenna_limits = [max(BODY_LIMIT, abs(a)) for a in around["target_antennas"]]
+    if abs(wrap(head["yaw"] - target["target_body_yaw"])) > relative_limit + 1e-8:
         raise HomeAssistantError("Head/body relative yaw exceeds the daemon's 65 degree limit")
-    if abs(target["target_body_yaw"]) > BODY_LIMIT + 1e-8:
+    if abs(target["target_body_yaw"]) > body_limit + 1e-8:
         raise HomeAssistantError("Body yaw exceeds the desktop range")
-    if any(not finite(a) or abs(a) > BODY_LIMIT + 1e-8 for a in target["target_antennas"]):
+    if any(not finite(a) or abs(a) > limit + 1e-8
+           for a, limit in zip(target["target_antennas"], antenna_limits)):
         raise HomeAssistantError("Antenna target exceeds the desktop range")
 
 
@@ -237,15 +266,22 @@ class ManualControl:
                 raise HomeAssistantError(NOT_READY)
         merging = self._worker is not None
         # While moving, continue from the frame being sent toward the combined goal.
-        start, base = (self._sent, self._goal) if merging else (fresh, fresh)
+        # A measured pose may sit slightly past a limit (e.g. roll 0.53 after a
+        # 0.5 target); the new goal pulls such an axis back onto the limit.
+        if merging:
+            start, base = self._sent, self._goal
+        else:
+            start, base = fresh, clamp_into_limits(fresh, self.follows)
         end = make_target(base, key, value, self.follows)
-        linked = not merging and self.follows and key in ("body_yaw", "center_body")
+        linked = (not merging and base == start and self.follows
+                  and key in ("body_yaw", "center_body"))
         steps = max(1, math.ceil(self.duration / 0.05))
-        # Validate the entire sampled path before sending any target.
+        # Validate the entire sampled path before sending any target; it may
+        # not go past where the robot already is.
         frames = [interpolate(start, end, i / steps, linked_body=linked)
                   for i in range(1, steps + 1)]
         for frame in frames:
-            validate_target(frame, self.follows)
+            validate_target(frame, self.follows, around=start)
         if self._done is not None and not self._done.done():
             self._done.set_result(None)  # the earlier goal is part of this one
         self._goal, self._frames = end, frames

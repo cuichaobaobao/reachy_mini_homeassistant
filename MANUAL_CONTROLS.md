@@ -1,4 +1,4 @@
-# Manual controls (0.2.7)
+# Manual controls (0.2.8)
 
 These controls belong to the HA integration. They do not change the voice app,
 daemon, host services or camera path.
@@ -33,6 +33,10 @@ The daemon's analytical solver uses a ±65-degree relative head/body yaw limit.
 We reject invalid combined targets instead of relying on the solver to change
 the requested body yaw. Individual limits do not guarantee every compound pose
 is mechanically reachable. Limits apply to sampled trajectory points too.
+A measured start pose slightly past a limit (servo and kinematics tolerance,
+e.g. roll 0.53 rad after a 0.5 rad target) does not block control: the next
+target pulls that axis back onto the limit, and sampled points stay between the
+start pose and the target. Requests beyond a limit are still rejected.
 
 ## Availability and state
 
