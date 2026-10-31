@@ -31,12 +31,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from typing import Any
 
 import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -49,6 +51,7 @@ from .const import (
     DEFAULT_TIMEOUT,
     DOMAIN,
     ENDPOINT_APP_LOCK,
+    ENDPOINT_APP_STARTUP,
     ENDPOINT_DOA,
     ENDPOINT_MOVE_LIST,
     ENDPOINT_MOVE_PLAY,
@@ -59,6 +62,10 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# How often and how long to watch a recorded move started from HA.
+MOVE_WATCH_INTERVAL = 1.0
+MOVE_WATCH_LIMIT = 180
 
 
 def _derive_awake(motor_mode: str | None, daemon_state: str | None) -> bool | None:
@@ -129,6 +136,11 @@ class ReachyMiniCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.selected_move: dict[str, str | None] = {
             ds: None for ds in RECORDED_MOVE_DATASETS
         }
+        # A recorded move HA started, until the daemon reports none running;
+        # manual controls and play buttons wait for it like the desktop.
+        self.move_playing = False
+        self._move_watch: asyncio.Task | None = None
+        self._missed_poses = 0
 
     @property
     def host(self) -> str:
@@ -162,9 +174,9 @@ class ReachyMiniCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def async_post(
         self, path: str, *, body: dict[str, Any] | None = None,
-        timeout: float = DEFAULT_TIMEOUT
+        timeout: float = DEFAULT_TIMEOUT, method: str = "POST",
     ) -> None:
-        """POST to a daemon endpoint and refresh coordinator state.
+        """POST (or ``method``) to a daemon endpoint and refresh coordinator state.
 
         Shared helper for the integration's writable entities
         (number sliders, select dropdowns, action buttons). Logs and
@@ -172,29 +184,43 @@ class ReachyMiniCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         the UI. Triggers an immediate coordinator refresh on success
         so the state snaps to whatever the daemon actually applied —
         users don't have to wait up to 30 s for the next poll.
+        Daemon errors carry its ``detail`` text instead of "Bad Request".
         """
         url = f"{self.base_url}{path}"
         try:
-            async with self._session.post(
+            async with self._session.request(
+                method,
                 url,
                 json=body,
                 timeout=aiohttp.ClientTimeout(total=timeout),
             ) as resp:
-                resp.raise_for_status()
+                if resp.status >= 400:
+                    detail = None
+                    with suppress(aiohttp.ClientError, ValueError):
+                        payload = await resp.json(content_type=None)
+                        if isinstance(payload, dict):
+                            detail = payload.get("detail")
+                    reason = detail if isinstance(detail, str) and detail else (
+                        getattr(resp, "reason", None) or "request failed")
+                    _LOGGER.warning(
+                        "Reachy Mini %s %s failed: %s %s", method, path, resp.status, reason)
+                    raise HomeAssistantError(f"Reachy Mini: {reason} ({resp.status})")
         except (aiohttp.ClientError, TimeoutError) as err:
-            _LOGGER.warning("Reachy Mini POST %s failed: %s", path, err)
-            raise
+            _LOGGER.warning("Reachy Mini %s %s failed: %s", method, path, err)
+            raise HomeAssistantError(f"Reachy Mini {path} failed: {err}") from err
         await self.async_request_refresh()
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Poll all endpoints in parallel and assemble the unified dict."""
-        status, app_lock, doa, vol_speaker, vol_mic, apps, controls = await asyncio.gather(
+        (status, app_lock, doa, vol_speaker, vol_mic, apps, startup,
+         controls) = await asyncio.gather(
             self._fetch_json(ENDPOINT_STATUS),
             self._fetch_json(ENDPOINT_APP_LOCK),
             self._fetch_json(ENDPOINT_DOA),
             self._fetch_json(ENDPOINT_VOLUME_SPEAKER),
             self._fetch_json(ENDPOINT_VOLUME_MIC),
             self._fetch_json(APP_LIST),
+            self._fetch_json(ENDPOINT_APP_STARTUP),
             self._poll_controls(),
         )
 
@@ -228,6 +254,9 @@ class ReachyMiniCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Audio mixer
             "speaker_volume": None,
             "mic_volume": None,
+            # Robot's own Startup app setting from /api/apps/startup-app
+            "startup_app": None,
+            "startup_app_known": False,
         }
 
         data.update(controls)
@@ -260,6 +289,20 @@ class ReachyMiniCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if isinstance(vol_mic, dict):
             v = vol_mic.get("volume")
             data["mic_volume"] = v if isinstance(v, int) and v >= 0 else None
+
+        if isinstance(startup, dict) and "startup_app" in startup:
+            value = startup["startup_app"]
+            if value is None or isinstance(value, str):
+                data["startup_app"] = value or None
+                data["startup_app_known"] = True
+
+        # Keep the last pose through one or two failed reads (e.g. a transient
+        # motor bus error) while the backend runs; a move reads a fresh pose.
+        if data["full_state"] is not None or data["daemon_state"] != DAEMON_STATE_RUNNING:
+            self._missed_poses = 0
+        elif self.data and self.data.get("full_state") is not None and self._missed_poses < 2:
+            self._missed_poses += 1
+            data["full_state"] = self.data["full_state"]
 
         return data
 
@@ -316,10 +359,36 @@ class ReachyMiniCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
 
     async def async_play_recorded_move(self, dataset: str, move: str) -> None:
-        """POST to the play endpoint; re-raises on HTTP failure."""
-        await self.async_post(
-            ENDPOINT_MOVE_PLAY.format(dataset=dataset, move=move)
-        )
+        """POST to the play endpoint; re-raises on HTTP failure.
+
+        Marks a move as playing until the daemon reports none running.
+        """
+        self.move_playing = True
+        self.async_update_listeners()
+        try:
+            await self.async_post(
+                ENDPOINT_MOVE_PLAY.format(dataset=dataset, move=move)
+            )
+        except BaseException:
+            self.move_playing = False
+            self.async_update_listeners()
+            raise
+        if self._move_watch is None or self._move_watch.done():
+            self._move_watch = self._entry.async_create_background_task(
+                self.hass, self._watch_move(), "reachy_mini_move_watch"
+            )
+
+    async def _watch_move(self) -> None:
+        """Clear ``move_playing`` once the daemon reports no running move."""
+        try:
+            for _ in range(MOVE_WATCH_LIMIT):
+                await asyncio.sleep(MOVE_WATCH_INTERVAL)
+                if await self._fetch_json(RUNNING_MOVES) == []:
+                    break
+        finally:
+            self.move_playing = False
+            self.async_update_listeners()
+        await self.async_request_refresh()
 
     async def async_load_apps(self) -> None:
         """Refresh installed choices without changing the robot's Startup app."""

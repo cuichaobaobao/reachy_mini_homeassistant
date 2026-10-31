@@ -44,7 +44,8 @@ def _mock_poll_endpoints(
             "backend_status": backend,
         },
     )
-    for path in ("/api/apps/current-app-status", "/api/state/full", "/api/move/running"):
+    for path in ("/api/apps/current-app-status", "/api/state/full", "/api/move/running",
+                 "/api/apps/startup-app"):
         aioclient_mock.get(BASE_URL + path, status=503)
     # Backend-gated endpoints 503 while the backend is down; keep them
     # failing in all tests — the fields under test don't come from them.
@@ -140,7 +141,7 @@ async def test_sleep_button_delegates_and_refreshes(
     sleep.assert_awaited_once()
     refresh.assert_awaited_once()
     assert button.entity_description.key == "goto_sleep"
-    assert button.entity_description.name == "Sleep and stop backend"
+    assert button.entity_description.name == "Go to sleep"
 
 
 async def test_motor_mode_select_errors_when_daemon_stopped(

@@ -1,7 +1,8 @@
 """Manual controls using cached state and the desktop's set_target REST fallback.
 
-No SDK dependency, control-slot acquisition, per-command preflight GETs or
-background motion loop. Only a user action sends a short, paced trajectory.
+No SDK dependency, control-slot acquisition or app/slot/motor preflight GETs.
+A movement reads the current pose once, then a single writer sends a short,
+paced trajectory; a newer command during it is folded into the same trajectory.
 """
 from __future__ import annotations
 
@@ -36,6 +37,9 @@ NAMES = {
 FULL_STATE = "/api/state/full"
 APP_STATUS = "/api/apps/current-app-status"
 RUNNING_MOVES = "/api/move/running"
+SET_TARGET = "/api/move/set_target"
+NOT_READY = "Robot is not ready for manual control; check its state and active app"
+POSE_ERROR = "Cannot read the current pose; nothing was sent"
 
 
 def finite(value: Any) -> bool:
@@ -166,13 +170,28 @@ class ManualControl:
         self.coordinator = coordinator
         self.follows = False
         self.duration = 1.0
-        self.busy = False
+        self._powering = False
         self._task: asyncio.Task | None = None
+        # One writer per robot. A newer command replaces its frames in place.
+        self._worker: asyncio.Task | None = None
+        self._frames: list[dict] | None = None
+        self._goal: dict | None = None
+        self._sent: dict | None = None
+        self._done: asyncio.Future | None = None
+
+    @property
+    def busy(self) -> bool:
+        return self._powering or self._worker is not None
 
     def available(self, *, power_off: bool = False) -> bool:
         c = self.coordinator
+        # Our own movement holds the command lock but must not grey out the controls.
+        if self._worker is not None:
+            lock_ok = not power_off
+        else:
+            lock_ok = not c.app_command_lock.locked()
         return (
-            c.last_update_success and not self.busy and not c.app_command_lock.locked()
+            c.last_update_success and lock_ok and not self._powering and not c.move_playing
             and cached_ready(c.data or {}, power_off=power_off)
             and (power_off or pose_from_state((c.data or {}).get("full_state")) is not None)
         )
@@ -189,51 +208,105 @@ class ManualControl:
         except (aiohttp.ClientError, TimeoutError, ValueError) as err:
             raise HomeAssistantError(f"Reachy Mini {path} failed") from err
 
-    def _begin(self, *, power_off: bool = False) -> None:
-        if not self.available(power_off=power_off):
-            raise HomeAssistantError("Robot is not ready for manual control; check its state and active app")
-        self.busy = True
+    def _begin(self) -> None:
+        if not self.available(power_off=True):
+            raise HomeAssistantError(NOT_READY)
+        self._powering = True
         self._task = asyncio.current_task()
         self.coordinator.async_update_listeners()
 
     async def _finish(self) -> None:
-        self.busy = False
+        self._powering = False
         self._task = None
         self.coordinator.async_update_listeners()
         await self.coordinator.async_request_refresh()
 
     async def move(self, key: str, value: float | None = None) -> None:
-        self._begin()
+        if not self.available():
+            raise HomeAssistantError(NOT_READY)
+        fresh = None
+        if self._worker is None:
+            # Start from a fresh pose, not one a poll cached before other motion.
+            try:
+                fresh = pose_from_state(await self.request("GET", FULL_STATE))
+            except HomeAssistantError as err:
+                raise HomeAssistantError(POSE_ERROR) from err
+            if fresh is None:
+                raise HomeAssistantError(POSE_ERROR)
+            if not self.available():
+                raise HomeAssistantError(NOT_READY)
+        merging = self._worker is not None
+        # While moving, continue from the frame being sent toward the combined goal.
+        start, base = (self._sent, self._goal) if merging else (fresh, fresh)
+        end = make_target(base, key, value, self.follows)
+        linked = not merging and self.follows and key in ("body_yaw", "center_body")
+        steps = max(1, math.ceil(self.duration / 0.05))
+        # Validate the entire sampled path before sending any target.
+        frames = [interpolate(start, end, i / steps, linked_body=linked)
+                  for i in range(1, steps + 1)]
+        for frame in frames:
+            validate_target(frame, self.follows)
+        if self._done is not None and not self._done.done():
+            self._done.set_result(None)  # the earlier goal is part of this one
+        self._goal, self._frames = end, frames
+        self._done = done = asyncio.get_running_loop().create_future()
+        if not merging:
+            self._sent = start
+            self._worker = asyncio.create_task(self._run())
+            self.coordinator.async_update_listeners()
+        await asyncio.shield(done)
+
+    async def _run(self) -> None:
         c = self.coordinator
+        loop = asyncio.get_running_loop()
+        error: BaseException | None = None
         try:
             async with c.app_command_lock:
-                start = pose_from_state(c.data.get("full_state"))
-                end = make_target(start, key, value, self.follows)
-                linked = self.follows and key in ("body_yaw", "center_body")
-                steps = max(1, math.ceil(self.duration / 0.05))
-                # Validate the entire sampled path before sending any target.
-                frames = [interpolate(start, end, i / steps, linked_body=linked)
-                          for i in range(1, steps + 1)]
-                for frame in frames:
-                    validate_target(frame, self.follows)
-                loop = asyncio.get_running_loop()
-                began = loop.time()
-                for i, frame in enumerate(frames, 1):
-                    await asyncio.sleep(max(0, began + i * self.duration / steps - loop.time()))
-                    # Cached changes (e.g. a normal poll observes an app start)
-                    # can stop a sequence, without per-command preflight GETs.
-                    if not c.last_update_success or not cached_ready(c.data or {}):
-                        raise HomeAssistantError("Robot state changed during manual movement")
-                    result = await self.request("POST", "/api/move/set_target", frame)
-                    if not isinstance(result, dict) or result.get("status") != "ok":
-                        raise HomeAssistantError("Daemon did not accept the manual target")
-                    # Do not burst delayed frames after a slow network request.
-                    began = max(began, loop.time() - i * self.duration / steps)
+                while True:
+                    frames = self._frames
+                    step = self.duration / len(frames)
+                    began = loop.time()
+                    for i, frame in enumerate(frames, 1):
+                        await asyncio.sleep(max(0, began + i * step - loop.time()))
+                        if self._frames is not frames:
+                            break
+                        # Cached changes (e.g. a normal poll observes an app start)
+                        # can stop a sequence, without per-command preflight GETs.
+                        if (not c.last_update_success or c.move_playing
+                                or not cached_ready(c.data or {})):
+                            raise HomeAssistantError("Robot state changed during manual movement")
+                        self._sent = frame
+                        result = await self.request("POST", SET_TARGET, frame)
+                        if isinstance(result, dict) and result.get("status") == "ignored":
+                            raise HomeAssistantError(
+                                "A recorded move is playing; try again when it finishes")
+                        if not isinstance(result, dict) or result.get("status") != "ok":
+                            raise HomeAssistantError("Daemon did not accept the manual target")
+                        # Do not burst delayed frames after a slow network request.
+                        began = max(began, loop.time() - i * step)
+                    else:
+                        if self._frames is frames:
+                            break
+        except asyncio.CancelledError as err:
+            error = err
+            raise
+        except Exception as err:  # reported to the waiting caller
+            error = err
         finally:
-            await self._finish()
+            done = self._done
+            self._worker = self._frames = self._goal = self._sent = self._done = None
+            c.async_update_listeners()
+            if isinstance(error, asyncio.CancelledError) and done is not None and not done.done():
+                done.cancel()
+        await c.async_request_refresh()
+        if done is not None and not done.done():
+            if error is None:
+                done.set_result(None)
+            else:
+                done.set_exception(error)
 
     async def power_off(self) -> None:
-        self._begin(power_off=True)
+        self._begin()
         try:
             async with self.coordinator.app_command_lock:
                 # Configuration lookup, not an app/slot/motor preflight.
@@ -254,11 +327,11 @@ class ManualControl:
             await self._finish()
 
     async def close(self) -> None:
-        """Stop an in-flight HA sequence on unload; never leave a writer running."""
-        if self._task is not None and self._task is not asyncio.current_task():
-            task = self._task
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        """Stop in-flight HA sequences on unload; never leave a writer running."""
+        for task in (self._worker, self._task):
+            if task is not None and task is not asyncio.current_task():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
