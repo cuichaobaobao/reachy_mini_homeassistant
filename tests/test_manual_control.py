@@ -8,8 +8,8 @@ import pytest
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.reachy_mini.manual_control import (
-    HEAD_KEYS, LIMITS, BODY_LIMIT, ManualControl, cached_ready,
-    interpolate, make_target, pose_from_state, rotate_with_body, validate_target,
+    HEAD_KEYS, LIMITS, BODY_LIMIT, cached_ready, clamp_into_limits,
+    interpolate, make_target, pose_from_state, rotate_with_body, value_of,
 )
 from custom_components.reachy_mini.number import ReachyMiniMotionNumber, ReachyMiniDurationNumber
 from custom_components.reachy_mini.button import ReachyMiniManualButton
@@ -75,7 +75,7 @@ async def test_recorded_move_from_ha_blocks_manual_control(manual):
     manual.request.assert_not_awaited()
 
 
-async def test_one_fresh_pose_read_and_untouched_axes_kept(manual):
+async def test_one_pose_read_and_untouched_axes_kept(manual):
     data = manual.coordinator.data["full_state"]
     data["head_pose"].update(pitch=0.1, z=0.005)
     with patch(SLEEP, AsyncMock()):
@@ -84,7 +84,8 @@ async def test_one_fresh_pose_read_and_untouched_axes_kept(manual):
     assert calls[0] == ("GET", "/api/state/full")
     assert calls[1:] and all(call == ("POST", "/api/move/set_target") for call in calls[1:])
     target = manual.request.await_args.args[2]
-    assert target["target_head_pose"]["yaw"] == pytest.approx(0.3)
+    # Desktop sign: positive Head yaw (right) is a negative API yaw.
+    assert target["target_head_pose"]["yaw"] == pytest.approx(-0.3)
     assert target["target_head_pose"]["pitch"] == 0.1
     assert target["target_head_pose"]["z"] == 0.005
     assert target["target_antennas"] == [-0.1745, 0.1745]
@@ -117,17 +118,36 @@ async def test_failed_fresh_pose_read_sends_nothing(manual, reply):
     assert not manual.busy
 
 
-@pytest.mark.parametrize("key,value", [
-    ("head_x", 0.051), ("head_pitch", 0.81), ("head_yaw", 1.21),
-    ("head_roll", 0.51), ("body_yaw", math.pi),
-    ("left_antenna", math.pi), ("head_yaw", float("nan")),
-    ("head_yaw", float("inf")), ("head_yaw", True),
+@pytest.mark.parametrize("key,value,expected", [
+    ("head_x", 0.051, 0.05), ("head_pitch", -0.81, -0.8), ("head_yaw", 1.21, 1.2),
+    ("head_roll", 0.51, 0.5), ("body_yaw", math.pi, BODY_LIMIT),
+    ("left_antenna", -math.pi, -BODY_LIMIT),
 ])
-async def test_invalid_targets_send_nothing(manual, key, value):
-    with pytest.raises(HomeAssistantError):
+async def test_out_of_range_values_are_clamped_like_the_desktop(manual, key, value, expected):
+    with patch(SLEEP, AsyncMock()):
         await manual.move(key, value)
+    final = posts(manual)[-1][2]
+    assert value_of(final, key) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), True])
+async def test_non_numbers_send_nothing(manual, value):
+    with pytest.raises(HomeAssistantError):
+        await manual.move("head_yaw", value)
     assert posts(manual) == []
     assert not manual.busy
+
+
+def test_display_signs_follow_the_desktop():
+    start = pose_from_state(ready()["full_state"])
+    for key in ("head_x", "head_pitch", "head_yaw"):
+        target = make_target(start, key, 0.04, False)
+        assert target["target_head_pose"][key[5:]] == pytest.approx(-0.04)
+        assert value_of(target, key) == pytest.approx(0.04)
+    for key in ("head_y", "head_z", "head_roll"):
+        assert make_target(start, key, 0.04, False)["target_head_pose"][key[5:]] == pytest.approx(0.04)
+    assert make_target(start, "body_yaw", 0.4, False)["target_body_yaw"] == pytest.approx(0.4)
+    assert make_target(start, "right_antenna", 0.4, False)["target_antennas"][1] == pytest.approx(0.4)
 
 
 def test_linked_rotation_preserves_body_relative_translation_and_orientation():
@@ -141,7 +161,6 @@ def test_linked_rotation_preserves_body_relative_translation_and_orientation():
         expected = rotate_with_body(start["target_head_pose"], -start["target_body_yaw"])
         for key in HEAD_KEYS:
             assert relative[key] == pytest.approx(expected[key])
-        validate_target(p, True)
     assert end["target_head_pose"]["yaw"] == pytest.approx(2.1)
 
 
@@ -151,17 +170,18 @@ def test_unlinked_body_keeps_world_head_pose():
     assert target["target_head_pose"] == start["target_head_pose"]
 
 
-def test_relative_yaw_rejected_instead_of_silently_moving_body():
+def test_relative_yaw_is_left_to_the_daemon_like_the_desktop():
     start = pose_from_state(ready()["full_state"])
-    with pytest.raises(HomeAssistantError, match="relative yaw"):
-        make_target(start, "body_yaw", 2.0, False)
+    target = make_target(start, "body_yaw", 2.0, False)
+    assert target["target_body_yaw"] == pytest.approx(2.0)
+    assert target["target_head_pose"]["yaw"] == 0
 
 
-def test_linked_rotation_checks_translated_xy_limits():
+def test_linked_rotation_clamps_translated_xy():
     start = pose_from_state(ready()["full_state"])
     start["target_head_pose"].update(x=0.05, y=0.05)
-    with pytest.raises(HomeAssistantError, match="Combined pose"):
-        make_target(start, "body_yaw", math.pi / 4, True)
+    target = make_target(start, "body_yaw", math.pi / 4, True)
+    assert all(abs(target["target_head_pose"][k]) <= 0.05 for k in ("x", "y"))
 
 
 def test_center_contracts():
@@ -259,8 +279,8 @@ async def test_own_movement_keeps_controls_available_and_merges(manual, config_e
     gate.set()
     await asyncio.wait_for(asyncio.gather(first, second), 5)
     final = posts(manual)[-1][2]["target_head_pose"]
-    assert final["yaw"] == pytest.approx(0.3)
-    assert final["pitch"] == pytest.approx(0.2)
+    assert final["yaw"] == pytest.approx(-0.3)
+    assert final["pitch"] == pytest.approx(-0.2)
     assert [c.args[0] for c in manual.request.await_args_list].count("GET") == 1
     assert not manual.busy and slider.available
 
@@ -407,7 +427,7 @@ async def test_measured_pose_past_a_limit_does_not_block_control(manual):
     rolls = [frame["target_head_pose"]["roll"] for frame in frames]
     assert rolls[-1] == pytest.approx(0.5)
     assert all(0.5 - 1e-9 <= roll <= 0.529 + 1e-9 for roll in rolls)
-    assert frames[-1]["target_head_pose"]["pitch"] == pytest.approx(0.2)
+    assert value_of(frames[-1], "head_pitch") == pytest.approx(0.2)
 
 
 @pytest.mark.parametrize("key", ["center_head", "center_all"])
@@ -419,23 +439,55 @@ async def test_center_recovers_from_pose_past_a_limit(manual, key):
     assert final["roll"] == pytest.approx(0) and final["pitch"] == pytest.approx(0)
 
 
-async def test_request_beyond_a_limit_is_still_rejected(manual):
+async def test_request_beyond_a_limit_is_clamped(manual):
     manual.coordinator.data["full_state"]["head_pose"]["roll"] = 0.529
-    with pytest.raises(HomeAssistantError):
+    with patch(SLEEP, AsyncMock()):
         await manual.move("head_roll", 0.6)
-    assert posts(manual) == []
+    rolls = [call[2]["target_head_pose"]["roll"] for call in posts(manual)]
+    assert rolls[-1] == pytest.approx(0.5)
+    assert max(rolls) <= 0.529 + 1e-9
 
 
 def test_path_may_only_stay_where_the_robot_already_is():
     start = pose_from_state(ready()["full_state"])
     start["target_head_pose"]["roll"] = 0.529
-    validate_target(start, False, around=start)
-    with pytest.raises(HomeAssistantError):
-        validate_target(start, False)
+    assert clamp_into_limits(start, False, around=start)["target_head_pose"]["roll"] == 0.529
+    assert clamp_into_limits(start, False)["target_head_pose"]["roll"] == 0.5
     beyond = copy.deepcopy(start)
     beyond["target_head_pose"]["roll"] = 0.54
-    with pytest.raises(HomeAssistantError):
-        validate_target(beyond, False, around=start)
+    assert clamp_into_limits(beyond, False, around=start)["target_head_pose"]["roll"] == 0.529
+
+
+async def test_next_move_starts_from_last_target_like_the_desktop(manual):
+    with patch(SLEEP, AsyncMock()):
+        await manual.move("head_roll", 0.5)
+        # The robot settles slightly past the target; measured noise is ignored.
+        manual.coordinator.data["full_state"]["head_pose"].update(roll=0.529, x=0.007)
+        manual.request.reset_mock()
+        await manual.move("head_pitch", 0.2)
+    frames = [call[2]["target_head_pose"] for call in posts(manual)]
+    assert all(frame["roll"] == pytest.approx(0.5) and frame["x"] == 0 for frame in frames)
+
+
+async def test_robot_moved_elsewhere_restarts_from_measured_pose(manual):
+    with patch(SLEEP, AsyncMock()):
+        await manual.move("head_roll", 0.2)
+        # E.g. an app or emotion turned the head: a major change, like the desktop sync.
+        manual.coordinator.data["full_state"]["head_pose"]["yaw"] = 0.8
+        manual.request.reset_mock()
+        await manual.move("head_pitch", 0.2)
+    final = posts(manual)[-1][2]["target_head_pose"]
+    assert final["yaw"] == pytest.approx(0.8)
+
+
+def test_displayed_values_use_three_decimals(manual, config_entry):
+    pose = manual.coordinator.data["full_state"]["head_pose"]
+    pose.update(roll=0.528705604560969, pitch=0.197514922844774, x=0.00717821885437432, yaw=-0.0001)
+    value = lambda key: ReachyMiniMotionNumber(manual.coordinator, config_entry, key).native_value
+    assert value("head_roll") == 0.529
+    assert value("head_pitch") == -0.198
+    assert value("head_x") == -0.007
+    assert value("head_yaw") == 0.0 and math.copysign(1, value("head_yaw")) == 1
 
 
 def test_wrap_boundary_keeps_linked_head_body_offset():
@@ -446,6 +498,5 @@ def test_wrap_boundary_keeps_linked_head_body_offset():
     assert end["target_head_pose"]["yaw"] < 0
     for t in (0.1, 0.5, 1):
         p = interpolate(start, end, t, linked_body=True)
-        validate_target(p, True)
         relative = rotate_with_body(p["target_head_pose"], -p["target_body_yaw"])
         assert relative["yaw"] == pytest.approx(0.7)
