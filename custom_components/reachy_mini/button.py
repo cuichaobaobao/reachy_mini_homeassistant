@@ -101,6 +101,12 @@ def robot_awake(coordinator: ReachyMiniCoordinator) -> bool:
     return data.get("daemon_state") == DAEMON_STATE_RUNNING and data.get("awake") is True
 
 
+def app_idle(coordinator: ReachyMiniCoordinator) -> bool:
+    """The desktop's Start buttons are disabled while any app or session is active."""
+    data = coordinator.data or {}
+    return data.get("app_state") in ("done", "error") and data.get("remote_session_active") is not True
+
+
 @dataclass(frozen=True, kw_only=True)
 class ReachyMiniPlayMoveButtonDescription(ButtonEntityDescription):
     """Describe a play-move button bound to a specific dataset."""
@@ -171,9 +177,17 @@ class ReachyMiniButton(ReachyMiniEntity, ButtonEntity):
 
     @property
     def available(self) -> bool:
-        """Stop/restart exist only while an app runs, like the desktop."""
-        if self.entity_description.post_path in APP_BUTTONS:
+        """Stop/restart exist only while an app runs, like the desktop.
+
+        The daemon restarts its backend only when running or in error; when
+        stopped it does nothing, so Restart daemon is unavailable then.
+        """
+        path = self.entity_description.post_path
+        if path in APP_BUTTONS:
             return super().available and app_running(self.coordinator)
+        if path == ENDPOINT_DAEMON_RESTART:
+            state = (self.coordinator.data or {}).get("daemon_state")
+            return super().available and state in (DAEMON_STATE_RUNNING, "error")
         return super().available
 
     async def async_press(self) -> None:
@@ -211,6 +225,12 @@ class ReachyMiniWakeUpButton(ReachyMiniEntity, ButtonEntity):
         """Wire the button to the coordinator."""
         super().__init__(coordinator, entry, WAKE_UP_DESCRIPTION.key)
 
+    @property
+    def available(self) -> bool:
+        """Like the desktop wake/sleep toggle: wake only while asleep."""
+        data = self.coordinator.data or {}
+        return super().available and data.get("awake") is False and data.get("app_state") != "stopping"
+
     async def async_press(self) -> None:
         """Start the daemon if stopped, else enable motors and play wake."""
         async with self.coordinator.app_command_lock:
@@ -237,6 +257,12 @@ class ReachyMiniGotoSleepButton(ReachyMiniEntity, ButtonEntity):
         """Wire the button to the coordinator."""
         super().__init__(coordinator, entry, GOTO_SLEEP_DESCRIPTION.key)
 
+    @property
+    def available(self) -> bool:
+        """Needs a running backend; upstream reports a stopped one as already asleep."""
+        return (super().available
+                and (self.coordinator.data or {}).get("daemon_state") == DAEMON_STATE_RUNNING)
+
     async def async_press(self) -> None:
         """Do not shut down the backend unless app exit is confirmed."""
         async with self.coordinator.app_command_lock:
@@ -256,6 +282,10 @@ class ReachyMiniStartAppButton(ReachyMiniEntity, ButtonEntity):
 
     def __init__(self, coordinator: ReachyMiniCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "start_selected_app")
+
+    @property
+    def available(self) -> bool:
+        return super().available and app_idle(self.coordinator)
 
     async def async_press(self) -> None:
         async with self.coordinator.app_command_lock:

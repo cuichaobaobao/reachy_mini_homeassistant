@@ -141,13 +141,13 @@ the value actually applied.
 
 | Entity | Action | Notes |
 |---|---|---|
-| Wake up | Backend start with wake, or motor enable + wake move | Wakes the robot; does not explicitly start an app. |
-| Go to sleep | Stop app, confirm exit, then `POST /api/daemon/stop?goto_sleep=true` | Stops speech app first, then sleeps and stops the backend. Antenna wake is unavailable until the backend runs again. Existing sleep entity ID is preserved. |
-| Start selected app | `POST /api/apps/start-app/{name}/no-evict` | Starts the selected installed app, starting a stopped backend first. Does not displace another app/session. Requires the no-evict route available in daemon 1.12.0. |
+| Wake up | Backend start with wake, or motor enable + wake move | Wakes the robot; does not explicitly start an app. Available only while asleep, like the desktop wake/sleep toggle. |
+| Go to sleep | Stop app, confirm exit, then `POST /api/daemon/stop?goto_sleep=true` | Stops speech app first, then sleeps and stops the backend. Antenna wake is unavailable until the backend runs again. Existing sleep entity ID is preserved. Unavailable when already deep asleep (backend stopped). |
+| Start selected app | `POST /api/apps/start-app/{name}/no-evict` | Starts the selected installed app, starting a stopped backend first. Does not displace another app/session. Requires the no-evict route available in daemon 1.12.0. Unavailable while an app or remote session is active, like the desktop. |
 | Stop current app | `POST /api/apps/stop-current-app` | Requests app shutdown. Daemon 1.12.0 then handles idle sleep, keeping its backend and configured antenna startup available. Available only while an app is starting or running, like the desktop. |
 | Restart current app | `POST /api/apps/restart-current-app` | Stop + start the current app — handy if it got stuck. Available only while an app is running. |
 | Play test sound | `POST /api/volume/test-sound` | Plays `impatient1.wav` — quick speaker check. |
-| Restart daemon | `POST /api/daemon/restart` | Soft restart of the daemon process. Use sparingly. |
+| Restart daemon | `POST /api/daemon/restart` | Restarts the motion backend inside the daemon (not the whole service); running apps keep running. Available only while the backend is running or in error; the daemon does nothing when it is stopped. |
 | Play emotion | `POST /api/move/play/recorded-move-dataset/{dataset}/{move}` | Plays the emotion currently selected in the *Emotion* select entity. Unavailable only while the robot is asleep. Like the `reachy_mini.play_recorded_move` service, it may play while an app is running. |
 | Play dance | `POST /api/move/play/recorded-move-dataset/{dataset}/{move}` | Plays the dance currently selected in the *Dance* select entity. Same availability as *Play emotion*. |
 
