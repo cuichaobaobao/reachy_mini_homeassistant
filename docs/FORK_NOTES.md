@@ -4,7 +4,7 @@ Owner: cuichaobaobao. Upstream: pollen-robotics/reachy_mini_homeassistant.
 
 ## 0.2.5
 
-See [0.2.5 release notes](RELEASE_0.2.5.md) for app selection/start, orderly backend sleep, compatibility requirements and installation checks. Runtime changes are confined to this integration. Dependencies, camera code and robot applications remain unchanged.
+See [0.2.5 release notes](../CHANGELOG.md) for app selection/start, orderly backend sleep, compatibility requirements and installation checks. Runtime changes are confined to this integration. Dependencies, camera code and robot applications remain unchanged.
 
 ## 0.2.2
 - Add bundled Reachy Mini icon and logo using Home Assistant 2026.3+ local brand support.

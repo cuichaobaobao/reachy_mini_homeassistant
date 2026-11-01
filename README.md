@@ -1,10 +1,10 @@
 # Reachy Mini — cuichaobaobao maintained fork
 
-Latest release: **0.2.5** adds app selection/start and stops the current app before backend shutdown. Names stay English; dependencies and camera code are unchanged. Update in HACS and restart HA. See [release notes](RELEASE_0.2.5.md).
+Release notes: [CHANGELOG](CHANGELOG.md) and the GitHub Releases page. Fork details: [docs/FORK_NOTES.md](docs/FORK_NOTES.md). Manual controls: [docs/MANUAL_CONTROLS.md](docs/MANUAL_CONTROLS.md).
 
 Release **0.2.1** adapts the camera dependency to AV19 without downgrading Home Assistant's PyAV package. Based on [Pollen Robotics' original integration](https://github.com/pollen-robotics/reachy_mini_homeassistant).
 
-Cloud checks passed on Python 3.13/3.14 and Home Assistant 2026.10.1: dependency resolution, module imports, H264/VP8 WebRTC video, audio, and JPEG encoding. Physical robot discovery and video still need installation testing. See [fork notes](FORK_NOTES.md).
+Cloud checks passed on Python 3.13/3.14 and Home Assistant 2026.10.1: dependency resolution, module imports, H264/VP8 WebRTC video, audio, and JPEG encoding. Physical robot discovery and video still need installation testing. See [fork notes](docs/FORK_NOTES.md).
 
 Add this fork as an **Integration** custom repository in HACS. It uses the same reachy_mini domain as upstream; install only one.
 
