@@ -1,0 +1,65 @@
+name: CI
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install test environment with the integration's dependencies
+        run: |
+          python -m pip install "homeassistant==2026.10.1" pytest-homeassistant-custom-component "av==19.0.0" "PyTurboJPEG==1.8.3" wheels/aiortc-1.14.0+av19.1-py3-none-any.whl
+          python -m pip check
+      - name: Imports and translations
+        run: |
+          python - <<'PY'
+          import importlib, json
+          from pathlib import Path
+          for name in ("", ".button", ".select", ".coordinator", ".app_control", ".camera", ".config_flow", ".number", ".switch", ".manual_control"):
+              importlib.import_module("custom_components.reachy_mini" + name)
+          root = Path("custom_components/reachy_mini")
+          assert json.loads((root / "strings.json").read_text()) == json.loads((root / "translations/en.json").read_text())
+          PY
+      - name: Unit tests
+        run: python -m pytest -q tests/test_controls.py tests/test_manual_control.py tests/test_app_control.py tests/test_wake_sleep.py tests/test_app_slot.py
+      - name: Camera resource regression
+        run: python scripts/check_camera_resources.py
+      - name: Media compatibility regression
+        run: python scripts/check_av19_media.py
+
+  release:
+    needs: test
+    if: github.repository == 'cuichaobaobao/reachy_mini_homeassistant' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish the manifest version if it has no release yet
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(python -c 'import json; print(json.load(open("custom_components/reachy_mini/manifest.json"))["version"])')
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "v$version is already released; nothing to publish."
+            exit 0
+          fi
+          python - "$version" > notes.md <<'PY'
+          import re, sys
+          version = sys.argv[1]
+          text = open("CHANGELOG.md").read()
+          match = re.search(rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|\Z)", text, re.M | re.S)
+          if not match:
+              sys.exit(f"CHANGELOG.md has no section for {version}")
+          print(match.group(1).strip())
+          PY
+          gh release create "v$version" --target "$GITHUB_SHA" --title "$version" --notes-file notes.md
