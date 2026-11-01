@@ -8,7 +8,7 @@ from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.reachy_mini.button import (
     BUTTONS, PLAY_MOVE_BUTTONS, ReachyMiniButton, ReachyMiniGotoSleepButton,
-    ReachyMiniPlayMoveButton,
+    ReachyMiniPlayMoveButton, ReachyMiniStartAppButton, ReachyMiniWakeUpButton,
 )
 from custom_components.reachy_mini.const import DANCES_DATASET
 from custom_components.reachy_mini.number import ReachyMiniMotionNumber
@@ -50,7 +50,36 @@ async def test_daemon_error_detail_is_shown(coordinator, config_entry, aioclient
 async def test_other_buttons_keep_their_behavior(coordinator, config_entry):
     coordinator.async_set_updated_data({"daemon_state": "stopped"})
     assert button(coordinator, config_entry, "play_test_sound").available
-    assert button(coordinator, config_entry, "restart_daemon").available
+
+
+@pytest.mark.parametrize("data,wake,sleep,restart", [
+    ({"daemon_state": "running", "awake": True}, False, True, True),    # awake
+    ({"daemon_state": "running", "awake": False}, True, True, True),    # shallow sleep
+    ({"daemon_state": "stopped", "awake": False}, True, False, False),  # deep sleep
+    ({"daemon_state": "error", "awake": False}, True, False, True),     # stop/start failed
+])
+async def test_lifecycle_buttons_follow_robot_state(coordinator, config_entry, data, wake, sleep, restart):
+    coordinator.async_set_updated_data({**data, "app_state": "done"})
+    assert ReachyMiniWakeUpButton(coordinator, config_entry).available is wake
+    assert ReachyMiniGotoSleepButton(coordinator, config_entry).available is sleep
+    assert button(coordinator, config_entry, "restart_daemon").available is restart
+
+
+async def test_wake_waits_while_an_app_stops(coordinator, config_entry):
+    coordinator.async_set_updated_data(
+        {"daemon_state": "running", "awake": False, "app_state": "stopping"})
+    assert not ReachyMiniWakeUpButton(coordinator, config_entry).available
+
+
+@pytest.mark.parametrize("app_state,remote,available", [
+    ("done", False, True), ("error", False, True), ("starting", False, False),
+    ("running", False, False), ("stopping", False, False), (None, False, False),
+    ("done", True, False),
+])
+async def test_start_app_only_when_no_app_is_active(coordinator, config_entry, app_state, remote, available):
+    coordinator.async_set_updated_data(
+        {"daemon_state": "stopped", "app_state": app_state, "remote_session_active": remote})
+    assert ReachyMiniStartAppButton(coordinator, config_entry).available is available
 
 
 @pytest.fixture

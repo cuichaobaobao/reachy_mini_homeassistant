@@ -1,12 +1,12 @@
 name: Robot controls and release
 on:
   push:
-    branches: [main, fix/0.2.9-controls]
+    branches: [main, fix/0.2.10-controls]
     paths:
       - 'custom_components/**'
       - 'tests/**'
       - '.github/workflows/app-controls.yml'
-      - 'RELEASE_0.2.9.md'
+      - 'RELEASE_0.2.10.md'
       - 'MANUAL_CONTROLS.md'
       - 'README.md'
   workflow_dispatch:
@@ -34,12 +34,12 @@ jobs:
           from pathlib import Path
           path = "custom_components/reachy_mini/manifest.json"
           new = json.loads(Path(path).read_text())
-          assert new.pop("version") == "0.2.9"
-          previous = json.loads(subprocess.check_output(["git", "show", "v0.2.8:" + path]))
+          assert new.pop("version") == "0.2.10"
+          previous = json.loads(subprocess.check_output(["git", "show", "v0.2.9:" + path]))
           previous.pop("version")
           assert new == previous, "Manifest changed beyond version"
           protected = ["wheels", "custom_components/reachy_mini/stream.py", "custom_components/reachy_mini/camera.py", "custom_components/reachy_mini/app_control.py", "custom_components/reachy_mini/brand", "custom_components/reachy_mini/services.py"]
-          assert not subprocess.check_output(["git", "diff", "v0.2.8", "HEAD", "--", *protected])
+          assert not subprocess.check_output(["git", "diff", "v0.2.9", "HEAD", "--", *protected])
           for name in ("", ".button", ".select", ".coordinator", ".app_control", ".camera", ".config_flow", ".number", ".switch", ".manual_control"):
               importlib.import_module("custom_components.reachy_mini" + name)
           assert json.loads(Path("custom_components/reachy_mini/strings.json").read_text()) == json.loads(Path("custom_components/reachy_mini/translations/en.json").read_text())
@@ -68,19 +68,19 @@ jobs:
           import json, subprocess
           from pathlib import Path
           path = "custom_components/reachy_mini/manifest.json"
-          old = json.loads(subprocess.check_output(["git", "show", "v0.2.8:" + path]))
+          old = json.loads(subprocess.check_output(["git", "show", "v0.2.9:" + path]))
           new = json.loads(Path(path).read_text())
-          assert new.pop("version") == "0.2.9"
+          assert new.pop("version") == "0.2.10"
           old.pop("version")
           assert old == new
-          assert not subprocess.check_output(["git", "diff", "v0.2.8", "HEAD", "--", "wheels", "custom_components/reachy_mini/stream.py", "custom_components/reachy_mini/camera.py", "custom_components/reachy_mini/app_control.py", "custom_components/reachy_mini/brand"])
+          assert not subprocess.check_output(["git", "diff", "v0.2.9", "HEAD", "--", "wheels", "custom_components/reachy_mini/stream.py", "custom_components/reachy_mini/camera.py", "custom_components/reachy_mini/app_control.py", "custom_components/reachy_mini/brand"])
           PY
       - name: Publish tested version
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.2.9 >/dev/null 2>&1; then
-            echo "Release v0.2.9 already exists; leaving it unchanged."
+          if gh release view v0.2.10 >/dev/null 2>&1; then
+            echo "Release v0.2.10 already exists; leaving it unchanged."
           else
-            gh release create v0.2.9 --target "$GITHUB_SHA" --title "0.2.9 — manual controls aligned with the desktop" --notes-file RELEASE_0.2.9.md
+            gh release create v0.2.10 --target "$GITHUB_SHA" --title "0.2.10 — button availability like the desktop" --notes-file RELEASE_0.2.10.md
           fi
